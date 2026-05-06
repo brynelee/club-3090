@@ -91,12 +91,16 @@ Run `sudo bash scripts/power-cap-sweep.sh --cooling air|water|aio` on a new rig 
 | 4090 | air | llama.cpp default | Qwen3.6 27B Q3_K_XL | 280W | 49.54 | 49.10 | 0.177 | [@laurimyllari #62](https://github.com/noonghunna/club-3090/discussions/62#discussioncomment-16832066) |
 | 4090 | air | llama.cpp default | Qwen3.6 27B Q3_K_XL | 300W | 50.26 | 50.02 | 0.168 | [@laurimyllari #62](https://github.com/noonghunna/club-3090/discussions/62#discussioncomment-16832066) |
 | 4090 | air | llama.cpp default | Qwen3.6 27B Q3_K_XL | 450W (stock) | 52.28 | 52.22 | 0.116 | [@laurimyllari #62](https://github.com/noonghunna/club-3090/discussions/62#discussioncomment-16832066) |
+| 5090 | air | vLLM default | Qwen3.6 27B AutoRound | **400W** ⭐ | 119.98 | 159.23 | 0.300 | [@apnar #62](https://github.com/noonghunna/club-3090/discussions/62#discussioncomment-16832685) |
+| 5090 | air | vLLM default | Qwen3.6 27B AutoRound | 575W (near-stock) | 119.38 | 159.94 | 0.277 | [@apnar #62](https://github.com/noonghunna/club-3090/discussions/62#discussioncomment-16832685) |
 
 ⭐ = peak TPS/W efficiency on that rig.
 
 **Cross-rig pattern**: efficiency knee falls at **~60-85% of stock TDP** across consumer Ampere/Ada — start there for a new card class and zoom in. Ada (4090) is proportionally more aggressive than Ampere (3090) — 4090 cuts 33% of stock TDP for ~7% TPS loss; 3090 cuts 15% of stock for ~5% loss.
 
-5090 (Blackwell consumer) anchor pending — cross-rig ask out to [@efschu](https://github.com/efschu) / [@apnar](https://github.com/apnar) on [disc #62](https://github.com/noonghunna/club-3090/discussions/62).
+**5090 compute-saturation note**: @apnar's data shows the 5090 caps at ~430W actual draw on Qwen3.6-27B even when allowed up to 575W — the workload is compute-saturated, not power-saturated. So 400W cap delivers ~equal TPS to 575W. The knee position will likely shift higher when running larger models that actually use the 5090's compute (e.g. Gemma 4 31B + MTP, larger Qwen variants).
+
+**Discussion**: cross-rig power-cap data lives at [disc #86](https://github.com/noonghunna/club-3090/discussions/86). Drop your sweep there.
 
 ---
 
