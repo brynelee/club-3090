@@ -61,17 +61,28 @@ The user explicitly chose to operate without NVLink. Don't suggest adding one.
 
 ## Power
 
-Production target: **230W per card** (default cap, quiet, cool, stable).
+Production target: **330W per card** is the sweet spot — peak TPS/W efficiency and only ~5% TPS loss vs unrestricted stock (~388W).
 
 Power lever:
 ```bash
-sudo nvidia-smi -pl 230 -i 0    # production default
-sudo nvidia-smi -pl 330 -i 0    # ~+10% mean TPS during heavy sessions
+sudo nvidia-smi -pm 1            # one-time: enable persistence mode
+sudo nvidia-smi -pl 330 -i 0     # production default (recommended for both vLLM and llama.cpp)
+sudo nvidia-smi -pl 230 -i 0     # thermal-constrained / quiet — see caveat below
 ```
 
-Past 330W: diminishing returns (SM clocks saturate near 1.9 GHz on 3090s).
+Past 330W: diminishing returns (SM clocks saturate near 1.9 GHz on 3090s); 388W is actually *less* efficient than 330W on Qwen3.6's GDN-attention kernels.
 
-For dual-card: combined power at 230W cap each = ~460W. Most modern 850W+ ATX PSUs handle this comfortably. If you push to 330W per card, you're at ~660W peak under heavy load — verify your PSU has at least 850W single rail.
+**Caveat — 230W on llama.cpp + GDN models is more aggressive than it looks**: cross-rig data from [@syangsao](https://github.com/noonghunna/club-3090/issues/58#issuecomment-4388766174) (1× water-cooled 3090, llama.cpp + Qwen3.6 Q3_K_XL) shows **230W costs ~34% TPS** vs stock (25 vs 38 TPS) because the chunked_gated_delta_rule kernel is genuinely compute-bound on this model, not memory-bound. On vLLM + AutoRound the same cap costs less (~10-15%) because the kernel mix is GEMM-dominated. **Recommendation**: use 330W as the default cap on either engine. Drop to 230W only if you're more thermal-constrained than perf-constrained, and expect the larger penalty on llama.cpp.
+
+For dual-card: combined power at 330W cap each = ~660W under heavy load — verify your PSU has at least 850W single rail. 230W cap each = ~460W combined for thermally-constrained builds.
+
+Cross-rig power-cap data (anchor points):
+
+| Engine | Model | Cap | Narr TPS | Code TPS | Source |
+|---|---|---:|---:|---:|---|
+| llama.cpp default | Qwen3.6 27B Q3_K_XL | 230W | 25.15 | 24.86 | [@syangsao #58](https://github.com/noonghunna/club-3090/issues/58#issuecomment-4388766174) |
+| llama.cpp default | Qwen3.6 27B Q3_K_XL | 330W | 36.35 | 36.26 | [@syangsao #58](https://github.com/noonghunna/club-3090/issues/58#issuecomment-4388766174) |
+| llama.cpp default | Qwen3.6 27B Q3_K_XL | 388W | 38.23 | 37.97 | [@syangsao #58](https://github.com/noonghunna/club-3090/issues/58#issuecomment-4388766174) |
 
 ---
 

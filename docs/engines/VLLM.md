@@ -94,11 +94,14 @@ n=3 is the empirical sweet spot. n=4 nominally hits higher TPS on code but 4th-p
 ### Power cap
 
 ```bash
-sudo nvidia-smi -pl 230 -i 0    # production default — quiet, cool
-sudo nvidia-smi -pl 330 -i 0    # ~+10% mean TPS during heavy sessions
+sudo nvidia-smi -pm 1            # one-time: enable persistence mode
+sudo nvidia-smi -pl 330 -i 0     # production default — peak TPS/W efficiency
+sudo nvidia-smi -pl 230 -i 0     # thermal-constrained / quiet — larger penalty on GDN models
 ```
 
-Past 330W: diminishing returns (SM clocks saturate near 1.9 GHz on 3090s).
+330W is the sweet spot — peak TPS/W efficiency on 3090s and only ~5% TPS loss vs unrestricted stock (~388W). Past 330W: diminishing returns (SM clocks saturate near 1.9 GHz). 388W is actually *less* efficient than 330W on Qwen3.6's GDN-attention kernels.
+
+**Note**: 230W on llama.cpp + Qwen3.6 costs ~34% TPS (cross-rig data from [@syangsao](https://github.com/noonghunna/club-3090/issues/58#issuecomment-4388766174)) because the GDN forward kernel is genuinely compute-bound. On vLLM the penalty is smaller (~10-15%) because the kernel mix is GEMM-dominated, but 330W is still the better default. See [docs/HARDWARE.md#power](../HARDWARE.md#power) for the full cross-rig table.
 
 ### Genesis env-opt-in patches
 
