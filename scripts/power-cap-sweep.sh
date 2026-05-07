@@ -692,8 +692,19 @@ for CAP in "${CAP_ARRAY[@]}"; do
       # Single-stream: original bench.sh path. Captures decode-bottleneck on
       # cards where compute is the limit (3090, 4090); shows flat curve on
       # cards over-provisioned for the workload (5090 + small models).
+      #
+      # Bench shape is env-overridable for fast sweeps on slow caps (e.g. 200W
+      # on a 3090 throttles TPS to ~15, making 500/400 tokens × 3 runs take
+      # ~3 min/cap). Run via `sudo -E ...` to preserve env across sudo:
+      #   BENCH_WARMUPS=0 BENCH_RUNS_PER_CAP=1 \
+      #   BENCH_MAX_TOKENS_NARR=250 BENCH_MAX_TOKENS_CODE=200 \
+      #   sudo -E bash scripts/power-cap-sweep.sh ...
+      # Defaults preserve the canonical 1+2 / 500+400 shape (~30s/cap on cards
+      # at decent operating points, ~3min/cap at heavy throttle).
       echo "[bench] decode-single @ ${CAP}W cap (output: $LOG_FILE)"
-      if ! WARMUPS=1 RUNS=2 MAX_TOKENS_NARR=500 MAX_TOKENS_CODE=400 \
+      if ! WARMUPS=${BENCH_WARMUPS:-1} RUNS=${BENCH_RUNS_PER_CAP:-2} \
+           MAX_TOKENS_NARR=${BENCH_MAX_TOKENS_NARR:-500} \
+           MAX_TOKENS_CODE=${BENCH_MAX_TOKENS_CODE:-400} \
            bash "$BENCH" 2>&1 | tee "$LOG_FILE" | tail -8; then
         kill $SAMPLER_PID 2>/dev/null || true
         wait $SAMPLER_PID 2>/dev/null || true
