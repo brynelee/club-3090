@@ -202,6 +202,48 @@ The cross-workload pattern: **both workload classes have efficiency knee at 400W
 
 **5090 compute-saturation note**: @apnar's data shows the 5090 caps at ~430W actual draw on Qwen3.6-27B even when allowed up to 575W — the workload is compute-saturated, not power-saturated. So 400W cap delivers ~equal TPS to 575W. **Confirmed cross-workload on Gemma 4 31B + MTP**: 21-cap sweep at 10W resolution shows actual draw plateaus at ~547W beyond 530W cap (no thermal throttle, GPU temp peaked 66°C — compute / memory bandwidth limit, not thermal). **Same 400W sweet spot** despite ~5× different absolute TPS class. Pattern: the 5090 + consumer-air-cooled platform appears to have a workload-independent ~400W efficiency knee on this rig class.
 
+### Clock-locking on Blackwell — sneaking past the 400W power-cap floor
+
+The 5090 has a **400W minimum power cap** — `nvidia-smi -pl 350` (or anything below 400W) is silently rejected on this card. That makes the power-cap-sweep methodology blind to the entire <400W envelope.
+
+[@apnar](https://github.com/noonghunna/club-3090/discussions/86#discussioncomment-16845745) ran a creative workaround: instead of setting power caps, **lock GPU SM clock + memory clock pairs** via `nvidia-smi -lgc <MHz>` and `nvidia-smi -lmc <MHz>`. Clock-locking has no minimum-power floor — you can drag the card down to 47W actual draw if you want.
+
+The result is a more efficient operating point than any power-cap sweep can find:
+
+![5090 freq-cap (clock-lock) efficiency curve (apnar)](img/freq-cap-5090-gemma4.png)
+
+*5090 air-cooled + Gemma-4-31B-AutoRound + vLLM-MTP K=3 + decode-concurrent N=6, 35-point sweep across 5 mem-clock tiers × 7 GPU-clock points each. **Top panel**: TPS climbs nearly linearly with mem clock — at 405 MHz mem (lowest), TPS caps at ~53 regardless of GPU clock; at 14001 MHz mem (max), TPS climbs through 800+ TPS at GPU 3090 MHz. **Bottom panel**: efficiency. Gold star = peak efficiency at 7001 mem / 1635 GPU MHz (2.025 TPS/W, 211W draw, 428 narr TPS) — that's **1.42× more efficient than the 400W power-cap sweet spot** (1.43 TPS/W). Blue star = Pareto point at 14001 mem / 2122 GPU MHz (1.92 TPS/W, 314W draw, 602 narr TPS) — **strictly better than the 400W cap on both axes**: +5% more TPS at -22% less power. Source script: [`img/freq-cap-5090-gemma4.py`](img/freq-cap-5090-gemma4.py). Source data: [disc #86 comment 16845745](https://github.com/noonghunna/club-3090/discussions/86#discussioncomment-16845745).*
+
+**Per-workload operating-point recommendations on 5090** (revised based on clock-lock data):
+
+| Workload | Recommended config | Mem MHz | GPU MHz | Narr TPS | Actual W | TPS/W |
+|---|---|---:|---:|---:|---:|---:|
+| **Pure efficiency target** (chat, IDE-agent, light load) | clock-lock | 7001 | 1635 | 428 | 211W | **2.025** ⭐ |
+| **Best Pareto (more TPS, less power than 400W cap)** | clock-lock | 14001 | 2122 | 602 | 314W | 1.92 |
+| Max-efficiency power cap | `nvidia-smi -pl 400` | (max) | (auto) | 571 | 400W | 1.43 |
+| Stock TDP | `nvidia-smi -pl 600` | (max) | (auto) | 600 | 547W | 1.10 |
+
+**How to apply clock-lock** on a 5090:
+
+```bash
+# Lock both clocks (the order matters — set mem first, then GPU)
+sudo nvidia-smi -lmc 7001 -i 0   # memory clock to 7001 MHz
+sudo nvidia-smi -lgc 1635 -i 0   # SM clock to 1635 MHz
+
+# Verify the lock held
+nvidia-smi --query-gpu=clocks.current.sm,clocks.current.memory \
+  --format=csv,noheader,nounits -i 0
+
+# To revert
+sudo nvidia-smi -rmc -i 0   # release memory-clock lock
+sudo nvidia-smi -rgc -i 0   # release graphics-clock lock
+```
+
+**Caveats**:
+- Clock-locking is **not portable to Ampere** — `-lmc` was removed from non-datacenter cards in some driver versions, and the 3090's voltage curve doesn't have the same headroom for sub-power-cap operation
+- This is an **air-cooled 5090 finding** — water-cooled rigs may have different optimal clock pairs (lower thermals → higher sustained boost-clock-vs-power tradeoff)
+- The freq-cap methodology hasn't been wrapped into `power-cap-sweep.sh` yet — apnar's data is hand-rolled. If you want to run a similar sweep on your 5090, copy his approach until we ship a `freq-cap-sweep.sh` companion
+
 ### Interpreting "draw plateaued below cap" sweeps
 
 If your sweep ends with the high-cap rows showing **actual draw < cap by 5-15%** (e.g. 547W actual at 600W cap on a 5090 with `decode-concurrent N=4`), it usually means one of:
