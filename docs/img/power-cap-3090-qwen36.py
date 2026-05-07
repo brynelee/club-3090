@@ -1,48 +1,46 @@
 """Generate 3090 power-cap efficiency chart from @noonghunna's water-cooled rig.
 
-Source data: this run, 2026-05-07, dual-3090 rig (GPU 0 used), water-cooled.
+Source data: 2026-05-07 sweep, dual-3090 rig (GPU 0 used), water-cooled.
 Engine: mainline llama.cpp (ghcr.io/ggml-org/llama.cpp:server-cuda) +
 Qwen3.6-27B-UD-Q3_K_XL.gguf, single-stream decode-single.
 
-Sweep stages:
-  200-210W: full bench (1 warm + 2 measured, 500/400 max_tokens) — sweep v2
-  220W:     quick bench (0 warm + 1 measured, 250/200 tokens) — sweep v3
-            narr 10.28 was cold-cache biased (first cap of quick-bench run);
-            code 18.72 retained (cache warmed by narr run that just preceded)
-  230-240W: same quick bench shape; cache warm from previous cap
-  250-390W: quick bench with warmups=1 (1 warm + 1 measured, 250/200) — sweep v4
+Sweep methodology: time-bounded streaming bench (10s/direction at each cap).
+Total wall: 8m12s for 21 caps from 190-390W in 10W increments. The time-bounded
+approach (vs token-bounded) makes per-cap wall constant ~23s regardless of cap,
+so total runtime scales linearly with cap count, not throttle severity.
 """
 import matplotlib.pyplot as plt
 
-# (cap_W, narr_TPS, code_TPS, actual_W, eff_TPS_per_W)
+# (cap_W, narr_TPS, code_TPS, actual_W, eff_TPS_per_W) — full 21-cap clean sweep
 data = [
-    (200, 15.56, 15.56, 199.67, 0.078),
-    (210, 17.55, 17.42, 209.67, 0.084),
-    (220, None, 18.72, 219.64, None),  # narr cold-cache biased; skip
-    (230, 21.07, 21.06, 229.66, 0.092),
-    (240, 23.29, 23.15, 239.7, 0.097),
-    (250, 26.21, 26.11, 249.69, 0.105),
-    (260, 27.75, 27.32, 259.80, 0.107),
-    (270, 29.18, 26.06, 269.91, 0.108),
-    (280, 30.74, 30.41, 279.95, 0.110),
-    (290, 32.08, 31.74, 289.64, 0.111),  # ⭐ sweet spot
-    (300, 32.74, 32.44, 299.61, 0.109),
-    (310, 33.23, 32.98, 309.18, 0.107),
-    (320, 33.81, 33.60, 319.51, 0.106),
-    (330, 34.25, 34.05, 328.89, 0.104),
-    (340, 34.39, 34.14, 334.24, 0.103),  # boost-state plateau begins
-    (350, 34.38, 34.18, 334.08, 0.103),
-    (360, 34.41, 34.23, 334.08, 0.103),
-    (370, 34.46, 34.20, 334.20, 0.103),  # stock TDP, plateau holds
-    (380, 35.24, 35.04, 361.19, 0.098),  # plateau ends, draw jumps to 361
-    (390, 35.84, 35.66, 388.58, 0.092),  # max — 388W draw at 390W cap
+    (190, 13.88, 13.69, 189.73, 0.073),
+    (200, 15.58, 15.68, 199.71, 0.078),
+    (210, 17.68, 17.48, 209.77, 0.084),
+    (220, 19.38, 19.28, 219.73, 0.088),
+    (230, 21.27, 21.07, 229.71, 0.093),
+    (240, 23.17, 22.97, 239.84, 0.097),
+    (250, 24.97, 24.77, 249.80, 0.100),
+    (260, 26.77, 26.57, 259.86, 0.103),
+    (270, 28.57, 28.47, 269.56, 0.106),
+    (280, 30.36, 30.77, 279.75, 0.109),
+    (290, 32.16, 32.06, 289.37, 0.111),  # ⭐ sweet spot
+    (300, 32.76, 32.76, 299.30, 0.109),
+    (310, 33.36, 33.26, 309.59, 0.108),
+    (320, 33.86, 33.76, 319.47, 0.106),
+    (330, 34.37, 34.26, 329.47, 0.104),
+    (340, 34.46, 34.25, 333.70, 0.103),  # boost-state plateau begins
+    (350, 34.46, 34.36, 334.00, 0.103),
+    (360, 34.36, 34.37, 333.97, 0.103),
+    (370, 34.36, 34.26, 334.02, 0.103),  # stock TDP, plateau holds
+    (380, 35.36, 35.26, 361.30, 0.098),  # plateau ends, draw jumps to 361
+    (390, 36.06, 35.96, 388.72, 0.093),  # max — 388W draw at 390W cap
 ]
 
 caps = [d[0] for d in data]
-narr = [d[1] if d[1] is not None else float('nan') for d in data]
+narr = [d[1] for d in data]
 code = [d[2] for d in data]
 draw = [d[3] for d in data]
-eff = [d[4] if d[4] is not None else float('nan') for d in data]
+eff = [d[4] for d in data]
 
 plt.rcParams.update({
     "font.family": "sans-serif",
@@ -65,8 +63,8 @@ ax1.plot(caps, code, "s-", color=color_code, linewidth=2.2, markersize=6,
          label="Code TPS", zorder=3)
 ax1.set_xlabel("Power cap (W)", fontsize=13)
 ax1.set_ylabel("Wall TPS (single-stream, llama.cpp mainline)", fontsize=13)
-ax1.set_xlim(195, 395)
-ax1.set_ylim(13, 39)
+ax1.set_xlim(185, 395)
+ax1.set_ylim(11, 39)
 ax1.grid(True, alpha=0.3, zorder=0)
 ax1.tick_params(axis="both", labelsize=11)
 
@@ -82,8 +80,8 @@ ax2.set_ylim(0.07, 0.118)
 # Sweet spot annotation: 290W
 ax1.axvline(290, color="goldenrod", linestyle=":", alpha=0.5, linewidth=1.5)
 ax1.annotate(
-    "★ 290W cap\n0.111 TPS/W (best efficiency)\n32.1 narr / 31.7 code\n78% of stock TDP",
-    xy=(290, 32.08),
+    "★ 290W cap\n0.111 TPS/W (best efficiency)\n32.2 narr / 32.1 code\n78% of stock TDP",
+    xy=(290, 32.16),
     xytext=(220, 27),
     fontsize=10.5,
     fontweight="bold",
@@ -94,7 +92,7 @@ ax1.annotate(
 
 # Boost-state plateau region (340-370W → all 334W draw)
 ax1.axvspan(335, 375, alpha=0.10, color="orange", zorder=0)
-ax1.text(355, 14.5, "boost-state plateau\n(caps 340-370W → ~334W draw)",
+ax1.text(355, 12.5, "boost-state plateau\n(caps 340-370W → ~334W draw)",
          fontsize=9.5, ha="center", color="#aa5500", fontstyle="italic")
 
 # Stock TDP marker at 370W
@@ -119,7 +117,7 @@ ax1.set_title(
 fig.text(
     0.5, 0.92,
     "1× 3090 water-cooled (GPU 0 of dual-3090 rig), mainline llama.cpp + Q3_K_XL GGUF, "
-    "single-stream  |  data: @noonghunna",
+    "time-bounded single-stream  |  data: @noonghunna",
     ha="center", fontsize=10, color="#666",
     style="italic",
 )

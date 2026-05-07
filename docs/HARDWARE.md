@@ -87,18 +87,26 @@ Run `sudo bash scripts/power-cap-sweep.sh --cooling air|water|aio` on a new rig 
 ```bash
 sudo bash scripts/power-cap-sweep.sh \
   --cooling air|water|aio \
+  --load-mode decode-single
+```
+
+For larger cards where single-stream doesn't saturate compute (5090, RTX PRO 6000), use `decode-concurrent`:
+
+```bash
+sudo bash scripts/power-cap-sweep.sh \
+  --cooling air|water|aio \
   --load-mode decode-concurrent \
   --concurrency auto \
   --bench-runs 3
 ```
 
-Three flags matter for anchor data:
-- **`--bench-runs 3`** — medians three batches per cap. Without this, single-batch variance can be 10-30%, making adjacent-cap deltas noise rather than signal.
-- **`--concurrency auto`** — picks N via plateau-detection at the highest cap (selects the highest N where both TPS and draw improve >3% over previous N). Avoids both under-loading (smaller GPUs at default N=4 plateau early) and over-loading (concurrency contention drops TPS).
-- **`--load-mode decode-concurrent`** — surfaces the curve on cards that don't saturate at single-stream decode (5090, larger Ada/Blackwell). 3090s often work fine at default `decode-single`, but `decode-concurrent` is safer cross-class.
+How `decode-single` is timed (the new default since 2026-05-07):
+- **Time-bounded streaming bench**: 10s narrative + 10s code per cap (configurable via `--target-cap-seconds`). Per-cap wall is constant ~23s regardless of cap or card class.
+- **Cross-card portable**: a 3090 sweep (190-390W, 21 caps) takes ~8 min; a 5090 sweep (300-600W, 31 caps) ~12 min; a 4090 sweep (230-600W, 38 caps) ~15 min — runtime scales linearly with cap count, not throttle severity.
+- **Power sampler stability**: the 23s/cap window provides 35-37 sampler readings (0.5s interval) where util>50%, well above the 10s minimum needed for stable median.
 
 **Default step-size is 10W.** Don't override unless you know why:
-- `--step-size 10` (default) → ~30 caps × ~30 sec/cap = ~15-20 min total. The right resolution for finding the actual knee.
+- `--step-size 10` (default) → 21-38 caps depending on card class. The right resolution for finding the actual knee.
 - `--step-size 50` → ~5-6 caps total. Quick smoke / single-rig sanity only — too coarse to pin down the efficiency knee for a cross-rig anchor.
 
 | GPU | Cooling | Engine | Model | Cap | Narr TPS | Code TPS | TPS/W | Source |
@@ -135,7 +143,7 @@ For rigs where we have full 10W-resolution sweeps, the curves below show TPS + T
 
 ![3090 + Qwen3.6-27B + llama.cpp power-cap efficiency curve (noonghunna)](img/power-cap-3090-qwen36.png)
 
-*3090 water-cooled + Qwen3.6-27B Q3_K_XL + mainline llama.cpp, 18-cap sweep 200-390W (mixed bench shapes). Yellow callout: 290W sweet spot (0.111 TPS/W) at **78% of stock 370W TDP**. Orange-shaded zone 340-370W: firmware boost-state plateau where caps 340/350/360/370W all draw identical ~334W actual. At 380W cap, draw escapes to 361W; at 390W cap, draw reaches 388W — so the apparent "ceiling" at 334W isn't a hardware limit, it's a discrete boost-state behavior. Source script: [`img/power-cap-3090-qwen36.py`](img/power-cap-3090-qwen36.py).*
+*3090 water-cooled + Qwen3.6-27B Q3_K_XL + mainline llama.cpp, 21-cap sweep 190-390W via time-bounded streaming bench (10s/direction). **Total wall: 8m12s.** Yellow callout: 290W sweet spot (0.111 TPS/W) at **78% of stock 370W TDP**. Orange-shaded zone 340-370W: firmware boost-state plateau where caps 340/350/360/370W all draw identical ~334W actual. At 380W cap, draw escapes to 361W; at 390W cap, draw reaches 388W — so the apparent "ceiling" at 334W isn't a hardware limit, it's a discrete boost-state behavior. Source script: [`img/power-cap-3090-qwen36.py`](img/power-cap-3090-qwen36.py).*
 
 **Cross-rig pattern**: efficiency knee falls at **~60-85% of stock TDP** across consumer Ampere/Ada — start there for a new card class and zoom in. Ada (4090) is proportionally more aggressive than Ampere (3090) — 4090 cuts 33% of stock TDP for ~7% TPS loss; 3090 cuts 15% of stock for ~5% loss.
 
