@@ -153,12 +153,16 @@ check_patches() {
   # club-3090#29. We grep -q each anchor in priority order on the full log.
   local docker_logs
   docker_logs="$(docker logs "${CONTAINER}" 2>&1)"
-  if echo "$docker_logs" | grep -q "\[Genesis\] FAILED"; then
+  # Use here-strings instead of pipes — when grep -q matches early it closes
+  # stdin, and the upstream `echo` then writes to a closed pipe → "Broken pipe"
+  # on stderr (issue #101 by @a-p-l). Here-strings feed the variable directly
+  # to grep without the pipe race.
+  if grep -q "\[Genesis\] FAILED" <<< "$docker_logs"; then
     fail "Genesis apply_all reported FAILED patch(es)" \
          "Inspect: docker logs ${CONTAINER} 2>&1 | grep -E 'Genesis.*FAILED' | head"
-  elif echo "$docker_logs" | grep -q "apply_all elapsed"; then
+  elif grep -q "apply_all elapsed" <<< "$docker_logs"; then
     pass "Genesis patches applied (apply_all completed clean)"
-  elif echo "$docker_logs" | grep -q "\[Genesis\] applied:"; then
+  elif grep -q "\[Genesis\] applied:" <<< "$docker_logs"; then
     pass "Genesis patches applied (partial log — apply_all may still be running)"
   else
     skip "no Genesis marker in logs (container restarted, or Genesis not loaded)"

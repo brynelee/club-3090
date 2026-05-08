@@ -46,6 +46,11 @@
 #                          Override to `auto` to get separate `reasoning_content` field
 #                          (Qwen3.6 thinking trace) — useful for clients that render
 #                          reasoning_content (most don't). Issue: club-3090#97.
+#   DISABLE_THINKING       set to 1 in .env to add `--chat-template-kwargs '{"enable_thinking":false}'`
+#                          which forces empty <think></think> blocks in responses. Useful for
+#                          clients (e.g. opencode) that display <think> content as the response.
+#                          Tradeoff: applies to ALL clients on this server — Hermes/agents that
+#                          use thinking lose reasoning capability. Issue: club-3090#97.
 #   PORT                   host port           (default: 8020)
 #   CUDA_VISIBLE_DEVICES   which GPU to use    (default: 0)
 #
@@ -68,19 +73,49 @@ services:
       - "${PORT:-8020}:8080"
     volumes:
       - "${MODEL_DIR:-../../../../models-cache}:/models:ro"
-    command: >-
-      --host 0.0.0.0
-      --port 8080
-      -m /models/${GGUF_FILE:-qwen3.6-27b/unsloth-q3kxl/Qwen3.6-27B-UD-Q3_K_XL.gguf}
-      --mmproj /models/${MMPROJ_FILE:-qwen3.6-27b/mmproj-F16.gguf}
-      -c ${CTX_SIZE:-262144}
-      -ngl 99
-      -fa on
-      --cache-type-k ${KV_TYPE:-q4_0}
-      --cache-type-v ${KV_TYPE:-q4_0}
-      -np 1
-      --jinja
-      --reasoning-format ${REASONING_FORMAT:-none}
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        # DISABLE_THINKING=1 in compose/.env appends --chat-template-kwargs to disable
+        # Qwen3 thinking server-side. Forces the chat template to insert empty
+        # <think></think> blocks → output goes straight to the response. Useful for
+        # clients (e.g. opencode) that display <think> content as the response.
+        # Tradeoff: applies to ALL clients on this server instance — Hermes/agents that
+        # use thinking lose reasoning capability. See docs/HARDWARE.md and disc club-3090#97.
+        # Note: $$VAR is YAML-escape for $VAR (compose passes literal $ to bash).
+        EXTRA_ARGS=()
+        if [ "$${DISABLE_THINKING:-0}" = "1" ]; then
+          EXTRA_ARGS+=("--chat-template-kwargs" '{"enable_thinking":false}')
+          echo "[entrypoint] DISABLE_THINKING=1 — chat template will produce empty <think></think>"
+        fi
+        exec llama-server "$$@" "$${EXTRA_ARGS[@]}"
+      - --
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /models/${GGUF_FILE:-qwen3.6-27b/unsloth-q3kxl/Qwen3.6-27B-UD-Q3_K_XL.gguf}
+      - --mmproj
+      - /models/${MMPROJ_FILE:-qwen3.6-27b/mmproj-F16.gguf}
+      - -c
+      - ${CTX_SIZE:-262144}
+      - -ngl
+      - "99"
+      - -fa
+      - "on"
+      - --cache-type-k
+      - ${KV_TYPE:-q4_0}
+      - --cache-type-v
+      - ${KV_TYPE:-q4_0}
+      - -np
+      - "1"
+      - --jinja
+      - --reasoning-format
+      - ${REASONING_FORMAT:-none}
     deploy:
       resources:
         reservations:
