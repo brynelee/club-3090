@@ -1,5 +1,15 @@
 # ===========================================================================
-# Gemma-4-31B-it (Intel AutoRound INT4) + Google MTP "assistant" drafter
+# Profile (at-a-glance):
+#   Model:     Gemma 4 31B (Intel AutoRound INT4)
+#   Topology:  Dual 3090 PCIe (TP=2, no NVLink)
+#   Drafter:   z-lab Gemma 4 DFlash n=7 (block-diffusion drafter, vLLM PR #41703 vendored overlay)
+#   KV:        bfloat16 (forced for drafter compatibility)
+#   Vision:    yes
+#   Max ctx:   32K (BF16 ceiling — for 262K code-optimal use gemma-dflash-int8.yml)
+#   Genesis:   N/A — Genesis is Qwen3-Next-specific
+#   Best for:  Peak code TPS on Gemma 4 (105/177 — +18% code over MTP) ⭐
+# ---------------------------------------------------------------------------
+# Gemma-4-31B-it (Intel AutoRound INT4) + z-lab Gemma 4 DFlash drafter
 # 2× RTX 3090 TP=2 + bfloat16 KV + 32K ctx + 4 streams.
 #
 # Status: COMMUNITY-CONTRIBUTED, EXPERIMENTAL.

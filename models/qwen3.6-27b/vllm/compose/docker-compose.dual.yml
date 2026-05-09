@@ -1,4 +1,14 @@
 # ===========================================================================
+# Profile (at-a-glance):
+#   Model:     Qwen3.6-27B (Lorbus AutoRound INT4 + BF16 mtp.fc preserved)
+#   Topology:  Dual 3090 PCIe (TP=2, no NVLink)
+#   Drafter:   MTP n=3 (built-in)
+#   KV:        fp8_e5m2 (1 byte/token)
+#   Vision:    yes
+#   Max ctx:   262K (237K single-prompt verified)
+#   Genesis:   none — intentionally Genesis-free (isolation control + fallback)
+#   Best for:  General-purpose dual-card vision + tools + long-ctx default ⭐
+# ---------------------------------------------------------------------------
 # Dual RTX 3090 — DEFAULT for 2× cards. Qwen3.6-27B + MTP n=3 + fp8 KV + vision.
 #
 # What this gives you (vs the single-card default):

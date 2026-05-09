@@ -1,4 +1,14 @@
 # ===========================================================================
+# Profile (at-a-glance):
+#   Model:     Qwen3.6-27B (Lorbus AutoRound INT4 + BF16 mtp.fc preserved)
+#   Topology:  Dual 3090 PCIe (TP=2, no NVLink)
+#   Drafter:   z-lab DFlash N=5 (block-diffusion drafter)
+#   KV:        fp8_e5m2 (forced bf16 for drafter via --dtype bfloat16)
+#   Vision:    no (vision tower dropped — frees ~0.5 GB/card for ctx)
+#   Max ctx:   200K (+15K vs dual-dflash.yml)
+#   Genesis:   none — DFlash drafter handles spec-decode independently
+#   Best for:  Peak code TPS, no-vision, with extra context headroom ⭐
+# ---------------------------------------------------------------------------
 # Dual-card DFlash text-only — TP=2 + DFlash N=5 + 200K ctx + NO vision.
 #
 # vs `docker-compose.dual-dflash.yml` (the with-vision variant): drops MoonViT

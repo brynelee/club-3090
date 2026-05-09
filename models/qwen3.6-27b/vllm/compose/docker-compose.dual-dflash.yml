@@ -1,4 +1,14 @@
 # ===========================================================================
+# Profile (at-a-glance):
+#   Model:     Qwen3.6-27B (Lorbus AutoRound INT4 + BF16 mtp.fc preserved)
+#   Topology:  Dual 3090 PCIe (TP=2, no NVLink)
+#   Drafter:   z-lab DFlash N=5 (block-diffusion drafter)
+#   KV:        fp8_e5m2 (forced bf16 for drafter via --dtype bfloat16)
+#   Vision:    yes
+#   Max ctx:   185K
+#   Genesis:   none — DFlash drafter handles spec-decode independently
+#   Best for:  Peak code TPS with vision (AL ~4.4 vs MTP's 3.4) ⭐
+# ---------------------------------------------------------------------------
 # Dual-card DFlash — TP=2 + DFlash N=5 spec-decode + 185K ctx + vision.
 #
 # The peak-single-stream code TPS variant. DFlash N=5 (z-lab's Qwen3.6-27B

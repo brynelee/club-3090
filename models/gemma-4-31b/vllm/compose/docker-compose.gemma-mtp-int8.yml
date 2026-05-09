@@ -1,4 +1,14 @@
 # ===========================================================================
+# Profile (at-a-glance):
+#   Model:     Gemma 4 31B (Intel AutoRound INT4)
+#   Topology:  Dual 3090 PCIe (TP=2, no NVLink)
+#   Drafter:   MTP n=3 (Google's official `gemma-4-31B-it-assistant`, BF16 0.5B)
+#   KV:        int8_per_token_head (1 byte/token, via vendored PR #40391 overlay)
+#   Vision:    yes
+#   Max ctx:   262K (8.2× over bf16 ceiling) — override MAX_NUM_SEQS=4 for 98K + 3.6× concurrency
+#   Genesis:   N/A — Genesis is Qwen3-Next-specific
+#   Best for:  Gemma 4 long-context default — full 262K ctx ⭐
+# ---------------------------------------------------------------------------
 # Gemma-4-31B-it (Intel AutoRound INT4) + Google MTP "assistant" drafter
 # 2× RTX 3090 TP=2 + per-token-head INT8 KV + ~120K ctx target.
 #

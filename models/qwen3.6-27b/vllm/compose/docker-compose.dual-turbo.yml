@@ -1,4 +1,14 @@
 # ===========================================================================
+# Profile (at-a-glance):
+#   Model:     Qwen3.6-27B (Lorbus AutoRound INT4 + BF16 mtp.fc preserved)
+#   Topology:  Dual 3090 PCIe (TP=2, no NVLink)
+#   Drafter:   MTP n=3 (built-in)
+#   KV:        turboquant_3bit_nc (TQ3, 0.375 bytes/token)
+#   Vision:    yes
+#   Max ctx:   262K
+#   Genesis:   v7.72.2 (PN59 streaming-GDN + PN34 workspace-lock-relax + PN12)
+#   Best for:  Multi-tenant agent fleet — 4 streams at full ctx (4.67× concurrency vs dual.yml) ⭐
+# ---------------------------------------------------------------------------
 # Dual-card Turbo — TP=2 + TurboQuant KV (turboquant_3bit_nc) + MTP n=3 + Genesis v7.69 dev.
 #
 # 2026-05-02 PM note: setup.sh now pins Genesis to v7.69 (commit 2db18df) which
