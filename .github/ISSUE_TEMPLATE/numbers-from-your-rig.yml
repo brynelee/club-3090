@@ -54,27 +54,44 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: soak-verdict
+    attributes:
+      label: Soak-continuous verdict
+      description: |
+        Which is closest to your rig's soak-continuous result? **Required field.** The
+        verdict is the single most-cited number when triaging cross-rig contributions —
+        it's how we know if Cliff 2b is open on your rig class. See
+        [docs/CLIFFS.md](https://github.com/noonghunna/club-3090/blob/master/docs/CLIFFS.md).
+
+        - If you ran `bash scripts/report.sh --full`, soak ran automatically — pick PASS or FAIL
+          based on the `[soak]` block in the report you pasted above.
+        - If you ran `--bench` only, you can run soak after-the-fact:
+          `bash scripts/soak-test.sh --continuous` (auto-detects endpoint + container).
+        - If you genuinely can't run it, pick "Skipped" + give a reason in Notes.
+      options:
+        - PASS — clean (no errors, 0 silent-empty turns, <200 MiB VRAM growth)
+        - PASS — borderline (within thresholds but worth flagging — see Notes)
+        - FAIL — VRAM accretion or growth-threshold overshoot (Cliff 2b suspect)
+        - FAIL — silent-empty turns or errors mid-soak
+        - Skipped — rig couldn't spare ~25 min (explain in Notes)
+        - Not yet run — will follow up in a comment
+    validations:
+      required: true
+
   - type: textarea
     id: soak-continuous
     attributes:
-      label: Soak-continuous summary (only fill in if you ran `--bench` instead of `--full`)
+      label: Soak-continuous summary excerpt (optional — paste the `[soak]` block if not in main report)
       description: |
         If you used `bash scripts/report.sh --full` above, soak-continuous is
-        already included — leave this blank.
+        already in the main report — leave this blank.
 
-        If you ran `--bench` (faster, no soak), please run soak separately and
-        paste the summary here, or note "skipped (rig couldn't spare ~25 min)":
+        If you ran soak separately, paste just the `[soak]` summary block:
 
         ```bash
-        SOAK_MODE=continuous SOAK_SESSIONS=5 SOAK_TURNS=5 \
-          CONTAINER=<container-name> ENDPOINT=<http://localhost:port> \
-          bash scripts/soak-test.sh
+        bash scripts/soak-test.sh --continuous   # auto-detects endpoint + container
         ```
-
-        Soak-continuous is the only test that catches Cliff 2b (multi-turn
-        accumulating-context cliff at ~25K tokens). See
-        [docs/CLIFFS.md](https://github.com/noonghunna/club-3090/blob/master/docs/CLIFFS.md)
-        for the byte-level explanation.
       render: markdown
     validations:
       required: false

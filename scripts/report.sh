@@ -679,6 +679,31 @@ if [[ $DO_BENCH -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Soak-not-run reminder — fired when --bench (or partial) was used without
+# --soak/--full. Cross-rig bench rows want the soak verdict; without it we
+# can't say if Cliff 2b is open on this rig class.
+# ---------------------------------------------------------------------------
+
+if [[ $DO_BENCH -eq 1 && $DO_SOAK -eq 0 ]]; then
+  section "Soak status"
+  cat <<'EOF'
+> ⚠️ **Soak: not included in this report.**
+>
+> This run used `--bench` (or `--verify`/`--stress` only) — the soak-continuous
+> test was skipped. Cross-rig bench contributions on club-3090 want the soak
+> verdict so we can tell whether Cliff 2b is open on your rig class.
+>
+> Run soak separately and paste its output as a follow-up:
+>
+> ```bash
+> bash scripts/soak-test.sh --continuous   # auto-detects endpoint + container
+> ```
+>
+> Takes ~25 min. The `[soak]` summary block (verdict, max VRAM growth, silent-empty %, TPS retention) is what ends up in the bench-template's "Soak verdict" dropdown. See [docs/CLIFFS.md](https://github.com/noonghunna/club-3090/blob/master/docs/CLIFFS.md) for context.
+EOF
+fi
+
+# ---------------------------------------------------------------------------
 # Footer
 # ---------------------------------------------------------------------------
 

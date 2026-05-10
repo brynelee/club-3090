@@ -16,11 +16,16 @@
 #   Default SOAK_SESSIONS=20 x SOAK_TURNS=5, capped by SOAK_TIMEOUT_S=1800.
 #   Expect 10-30 minutes depending on config.
 #
-# Usage:
-#   CONTAINER=vllm-qwen36-27b-long-vision bash scripts/soak-test.sh
-#   ENDPOINT=http://localhost:8020 SOAK_SESSIONS=8 bash scripts/soak-test.sh
+# Usage (preferred):
+#   bash scripts/soak-test.sh                         # default fresh mode (20 sessions × 5 turns)
+#   bash scripts/soak-test.sh --continuous            # Cliff 2b detector (5 sessions × 5 turns ramping ctx)
+#   bash scripts/soak-test.sh --quick                 # 8 sessions × 5 turns, fresh mode (~5-8 min)
+#   bash scripts/soak-test.sh --help                  # full help
 #
-# Env:
+# Auto-detect: container + endpoint + model are sniffed from `docker ps` and
+# the running endpoint's /v1/models. Override via env vars if needed.
+#
+# Env (advanced — flags above cover the common cases):
 #   CONTAINER              Running container. Default: first vllm-qwen36-27b*
 #                          container from `docker ps`.
 #   ENDPOINT / URL         OpenAI endpoint. Default: mapped container port for
@@ -57,9 +62,81 @@
 
 set -euo pipefail
 
-SOAK_SESSIONS="${SOAK_SESSIONS:-20}"
-SOAK_TURNS="${SOAK_TURNS:-5}"
-SOAK_MODE="${SOAK_MODE:-fresh}"
+usage() {
+  cat <<'EOF'
+soak-test.sh — multi-turn VRAM-accretion + Cliff 2b validation
+
+USAGE
+  bash scripts/soak-test.sh [MODE]
+
+MODES
+  (default)         fresh mode: 20 sessions × 5 turns, ~10-25 min
+                    Tests raw per-request VRAM accretion.
+  --continuous      Cliff 2b detector: 5 sessions × 5 turns, ramping context
+                    to ~22-25K accumulated tokens. **The only test that
+                    catches the multi-turn accumulating-context cliff** that
+                    bit hermes/openhands traffic on long-* configs.
+  --quick           8 sessions × 5 turns, fresh mode (~5-8 min)
+  --fresh           Explicit fresh mode (same as default)
+
+OPTIONS
+  -h, --help        Show this help
+
+ENV (advanced — auto-detected by default)
+  CONTAINER         Running container. Default: first vllm-qwen36-27b* /
+                    vllm-gemma-4-31b* from docker ps. Use CONTAINER=none for
+                    host-mode engines (e.g. llama.cpp host build).
+  ENDPOINT / URL    OpenAI endpoint. Default: mapped container port → fallback
+                    http://localhost:8020.
+  MODEL             Served model. Default: first id from /v1/models.
+  SOAK_SESSIONS     Override session count.
+  SOAK_TURNS        Override turn count.
+  SOAK_MAX_GROWTH_MIB   VRAM-growth fail threshold. Default: 200.
+  SOAK_TIMEOUT_S    Hard wall-clock cap. Default: 1800.
+
+EXAMPLES
+  bash scripts/soak-test.sh --continuous          # Cliff 2b detector
+  bash scripts/soak-test.sh --quick               # fast smoke
+  CONTAINER=vllm-gemma-4-31b-mtp bash scripts/soak-test.sh --continuous
+  CONTAINER=none ENDPOINT=http://localhost:8030 bash scripts/soak-test.sh
+
+NOTES
+  Soak-continuous is the only test that catches Cliff 2b. If you're filing a
+  bench contribution, run with --continuous and paste the [soak] summary
+  alongside your bench numbers. See docs/CLIFFS.md for context.
+
+EOF
+}
+
+# --- arg parsing -------------------------------------------------------------
+# Set defaults (env vars override; flags override env vars; --help short-circuits)
+MODE_FLAG=""
+QUICK=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --continuous)  MODE_FLAG="continuous"; shift ;;
+    --fresh)       MODE_FLAG="fresh"; shift ;;
+    --quick)       QUICK=1; MODE_FLAG="${MODE_FLAG:-fresh}"; shift ;;
+    -h|--help)     usage; exit 0 ;;
+    *)             echo "✗ unknown argument: $1" >&2
+                   echo "  run 'bash scripts/soak-test.sh --help' for usage." >&2
+                   exit 2 ;;
+  esac
+done
+
+SOAK_MODE="${SOAK_MODE:-${MODE_FLAG:-fresh}}"
+if [[ "$SOAK_MODE" == "continuous" ]]; then
+  # Continuous mode requires the ramping turn shape; sessions=5 is the
+  # standard cross-rig cadence (matches what BENCHMARKS rows cite).
+  SOAK_SESSIONS="${SOAK_SESSIONS:-5}"
+  SOAK_TURNS="${SOAK_TURNS:-5}"
+elif [[ "$QUICK" == "1" ]]; then
+  SOAK_SESSIONS="${SOAK_SESSIONS:-8}"
+  SOAK_TURNS="${SOAK_TURNS:-5}"
+else
+  SOAK_SESSIONS="${SOAK_SESSIONS:-20}"
+  SOAK_TURNS="${SOAK_TURNS:-5}"
+fi
 SOAK_MAX_GROWTH_MIB="${SOAK_MAX_GROWTH_MIB:-200}"
 SOAK_TIMEOUT_S="${SOAK_TIMEOUT_S:-1800}"
 SOAK_REQ_TIMEOUT_S="${SOAK_REQ_TIMEOUT_S:-600}"
