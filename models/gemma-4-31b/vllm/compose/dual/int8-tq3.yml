@@ -3,11 +3,62 @@
 #   Model:     Gemma 4 31B (Intel AutoRound INT4)
 #   Topology:  Dual 3090 PCIe (TP=2, no NVLink)
 #   Drafter:   MTP n=4 (Google's official `gemma-4-31B-it-assistant`, BF16 0.5B)
-#   KV:        turboquant_3bit_nc — **NOT WORKING on Gemma 4 today**
-#   Status:    ⚠️ BLOCKED upstream — placeholder. Do not deploy.
-#   Best for:  Future TQ3 head-to-head against qwen3.6-27b/dual/int8-tq3.yml
-#              once the upstream PR chain below lands.
+#   KV:        turboquant_3bit_nc
+#   Status:    ⛔ HARDWARE-BLOCKED on Ampere — see 2026-05-11 walkthrough below.
+#              Compose retained as documentation + future re-test surface.
+#   Best for:  Reference / re-test when FA Ampere head_dim>256 lands OR vLLM
+#              gains per-layer attention backend routing.
 # ---------------------------------------------------------------------------
+# 2026-05-11 WORKAROUND ATTEMPT — full walkthrough + final wall:
+#
+#   We walked the vllm-issue#41403 5-gate chain. Outcome: 5 gates closed/
+#   worked-around, then hit a 6th hardware-physical gate on Ampere.
+#
+#   Gates 1–5 (all addressable on this rig):
+#     Gate 3 (plugin drift):  `pip uninstall -y turboquant-vllm` in entrypoint.
+#     Gate 4 (ninja):         `pip install ninja` in entrypoint.
+#     Gate 5 (page-size):     closed by merged vllm#39931 in nightly 1acd67a7.
+#     Gate 1 (mm_prefix):     `--hf-overrides text_config.use_bidirectional_attention=null`.
+#     Gate 2 (per-layer routing): patched our overlay's
+#                             TurboQuantConfig.get_boundary_skip_layers → [],
+#                             so no layers want "auto" dtype that TQ rejects.
+#     Plus vendored vllm#40108 overlay (8 files in ../../patches/vllm-pr40108-rebased/)
+#     for TQ + YOCO + sliding-window kernels.
+#     Plus our cudagraph-capture guards on 3 `.tolist()` sites in PR #40108's
+#     turboquant_attn.py (lines 486, 591, 592) — same family of fix as the
+#     merged PR #41434 elsewhere in the codebase.
+#
+#   Gate 6 — HARDWARE-PHYSICAL on Ampere SM 8.6 (RTX 3090):
+#     ```
+#     RuntimeError: FlashAttention forward only supports head dimension at most 256
+#     ```
+#     Fires in TurboQuantAttentionBackend._prefill_attention →
+#     flash_attn_varlen_func(). Gemma 4 has interleaved head_dims: sliding-
+#     attention layers use head_dim=256, global-attention layers use
+#     head_dim=512. With gate 2 worked around (boundary skip disabled), TQ
+#     backend handles all 60 layers including the global ones. FA2 on Ampere
+#     SM 8.6 only supports head_dim ≤ 256. FA3 (which supports 512) requires
+#     Hopper SM 9.0+. The TQ backend has no pure-Triton fallback for global
+#     attention on Ampere.
+#
+#     If we restore boundary skip: boundary layers want "auto" dtype, vLLM
+#     has no per-layer attention backend routing, so the global TURBOQUANT
+#     backend rejects them on validation. Both paths blocked.
+#
+#   What unlocks this path:
+#     (a) vLLM TQ backend gains pure-Triton prefill for head_dim>256 on
+#         Ampere (no upstream PR exists yet), OR
+#     (b) vLLM gains per-layer attention backend routing (would let
+#         boundary layers use TRITON_ATTN while interior layers use
+#         TURBOQUANT), OR
+#     (c) Run on Hopper SM 9.0+ hardware where FA3 supports head_dim=512.
+#
+#   Compose retained as both documentation and re-test surface. To re-test
+#   when unlocked: `MODEL_DIR=/mnt/models/huggingface docker compose -f int8-tq3.yml up -d`.
+#
+# ---------------------------------------------------------------------------
+# ORIGINAL TOMBSTONE (pre-2026-05-11 workaround attempt, retained for history):
+#
 # UPSTREAM BLOCKER CHAIN (verified 2026-05-11):
 #
 #   Booting this compose today fails at engine init with:
@@ -141,15 +192,22 @@ services:
       # capture would re-key on the patched kernel paths anyway).
       - ../../cache/torch_compile_int8:/root/.cache/vllm/torch_compile_cache
       - ../../cache/triton_int8:/root/.triton/cache
-      # ---- vLLM PR #40391 overlay (rebased onto post-Mamba main) ----
-      # 7 files: per-token-head fp8 KV support for Gemma 4. Drop when PR merges.
-      - ../../patches/vllm-pr40391-rebased/model_executor/layers/attention/attention.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/attention/attention.py:ro
-      - ../../patches/vllm-pr40391-rebased/model_executor/models/gemma4.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/gemma4.py:ro
-      - ../../patches/vllm-pr40391-rebased/v1/core/kv_cache_utils.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_utils.py:ro
-      - ../../patches/vllm-pr40391-rebased/v1/kv_cache_interface.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/kv_cache_interface.py:ro
-      - ../../patches/vllm-pr40391-rebased/v1/worker/gpu/attn_utils.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/attn_utils.py:ro
-      - ../../patches/vllm-pr40391-rebased/v1/worker/gpu_model_runner.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py:ro
-      - ../../patches/vllm-pr40391-rebased/v1/worker/kv_cache_shape_utils.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/kv_cache_shape_utils.py:ro
+      # ---- vLLM PR #40108 overlay (TurboQuant + YOCO + sliding-window) ----
+      # 8 files: adds PyTorch sliding-window mask, Triton windowed decode,
+      # unified KV page-size logic for TQ backend on Gemma 4. Drop when
+      # PR #40108 merges. See ../../patches/vllm-pr40108-rebased/README.md.
+      # NOTE: this REPLACES the PR #40391 overlay (used by int8.yml) — both
+      # PRs touch attention.py + kv_cache_utils.py, can't coexist file-mount.
+      # int8.yml keeps the #40391 overlay; this compose uses #40108 instead
+      # because TQ3 doesn't need per-token-head KV support.
+      - ../../patches/vllm-pr40108-rebased/config/model.py:/usr/local/lib/python3.12/dist-packages/vllm/config/model.py:ro
+      - ../../patches/vllm-pr40108-rebased/engine/arg_utils.py:/usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py:ro
+      - ../../patches/vllm-pr40108-rebased/model_executor/layers/attention/attention.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/attention/attention.py:ro
+      - ../../patches/vllm-pr40108-rebased/model_executor/layers/quantization/turboquant/config.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/turboquant/config.py:ro
+      - ../../patches/vllm-pr40108-rebased/v1/attention/backends/turboquant_attn.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/turboquant_attn.py:ro
+      - ../../patches/vllm-pr40108-rebased/v1/attention/ops/triton_turboquant_decode.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/ops/triton_turboquant_decode.py:ro
+      - ../../patches/vllm-pr40108-rebased/v1/core/kv_cache_utils.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_utils.py:ro
+      - ../../patches/vllm-pr40108-rebased/v1/worker/utils.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/utils.py:ro
       # ---- Gemma 4 tool-parser stacked fixes (PR #42006 + PR #41991) ----
       # 1 file: MTP streaming multi-tool + parser bounds. Drop when both PRs merge.
       - ../../patches/vllm-gemma4-tool-parser-fixes/tool_parsers/gemma4_tool_parser.py:/usr/local/lib/python3.12/dist-packages/vllm/tool_parsers/gemma4_tool_parser.py:ro
@@ -164,6 +222,27 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:512}
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
       - TRITON_CACHE_DIR=/root/.triton/cache
+      # Note: PR #40108's turboquant_attn.py has 3 `.tolist()` CPU syncs at
+      # lines 486, 591, 592 that crashed cudagraph capture. Our overlay
+      # adds is_current_stream_capturing() guards at all three sites
+      # (same family of fix as PR #41434 applied elsewhere). Cudagraph
+      # capture stays enabled.
+    # ---- 2026-05-11 workaround preamble ----
+    # Gate 4: ninja required for Triton JIT (some TurboQuant kernels JIT-compile).
+    # Gate 3: drop turboquant-vllm plugin if present (signature drift vs nightly).
+    # Then chain to the normal `vllm serve` entrypoint.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        echo "[club3090-tq3] Gate 4: installing ninja..." >&2
+        pip install ninja --quiet 2>&1 | tail -2 >&2 || true
+        echo "[club3090-tq3] Gate 3: dropping turboquant-vllm plugin..." >&2
+        pip uninstall -y turboquant-vllm 2>&1 | tail -1 >&2 || true
+        echo "[club3090-tq3] Launching vllm serve..." >&2
+        exec vllm serve "$@"
+      - --
     shm_size: "16gb"
     ipc: host
     deploy:
@@ -185,6 +264,23 @@ services:
       - --tensor-parallel-size
       - "2"
       - --disable-custom-all-reduce
+      # ---- 2026-05-11 workaround flags ----
+      # Force TURBOQUANT backend — required because vLLM has no per-layer
+      # backend routing (Gate 2). Without force, vLLM picks TRITON_ATTN
+      # globally for Gemma 4 and rejects turboquant_3bit_nc on interior layers.
+      # Companion patch: our overlay's TurboQuantConfig.get_boundary_skip_layers
+      # returns [] so no layers want "auto" dtype (which TURBOQUANT rejects).
+      # Quality cost: boundary precision loss on layers 0/1/58/59. Upstream
+      # notes ~30 GSM8K drop on Qwen3-4B at aggressive 3bit_nc; Gemma 4
+      # impact unmeasured. Drop this when per-layer routing lands.
+      - --attention-backend
+      - TURBOQUANT
+      # Gate 1 workaround: disable bidirectional vision attention so image
+      # tokens don't propagate mm_prefix=True (which TQ backend doesn't yet
+      # implement). Image-token attention degrades to causal — bench-OK,
+      # but vision-quality benchmarks are no longer apples-to-apples.
+      - --hf-overrides
+      - '{"text_config":{"use_bidirectional_attention":null}}'
       # ---- KV format ----
       # Default `int8_per_token_head` runs on every consumer GPU including
       # sm_86 Ampere (uses standard PyTorch torch.int8 ops, not the Triton
