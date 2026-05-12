@@ -135,9 +135,20 @@ Intel's Tensor-Core equivalent is **XMX (Xe Matrix Extensions)** on Xe-architect
 | INT8 (XMX) | ✓ | ✓ | ✓ (~2× HPG throughput) |
 | INT4 (XMX) | ✓ | ✓ | ✓ |
 | INT2 (XMX) | ✗ | ✗ | ✓ |
-| FP8 E4M3 / E5M2 | ✗ | ✗ | 🟡 partial (emerging) |
+| FP8 E4M3 / E5M2 | ✗ | ✗ | 🟡 partial (silicon support; production stacks maturing) |
 | MXFP4 / microscaling | ✗ | ✗ | 🟡 emerging via OpenVINO |
 | FP4 / NVFP4 | ✗ | ✗ | ✗ |
+
+**FP8 maturity caveat (mid-2026)**: Xe2 silicon supports FP8, but **full FP8 acceleration in production inference stacks (vLLM-SYCL, IPEX-LLM)** is still being plumbed through. OpenVINO has the most coverage today; expect 6-12 month lag behind NVIDIA's transformer-engine path for equivalent throughput. Track [oneAPI release notes](https://www.intel.com/content/www/us/en/developer/tools/oneapi/overview.html) for kernel landing dates.
+
+## Intel KV cache options
+
+| KV format | Xe-HPG (Arc A) | Xe-HPC (DC) | Xe2 (Arc B) | Stack |
+|---|:--:|:--:|:--:|---|
+| FP16 / BF16 | ✓ | ✓ | ✓ | universal — IPEX-LLM / OpenVINO default |
+| INT8 via XMX | ✓ | ✓ | ✓ | IPEX-LLM has the most coverage |
+| FP8 | ✗ | ✗ | 🟡 emerging | not production-ready in vLLM-SYCL as of 2026-05 |
+| llama.cpp `q4_0` / `q5_0` / `q8_0` | ✓ | ✓ | ✓ | SYCL backend — most portable path on Intel GPUs today |
 
 ## What this means for LLM serving on Intel
 
@@ -166,7 +177,7 @@ The two are *not* the same hardware path and have very different LLM-serving cha
 
 ## RDNA (Radeon consumer) — WMMA
 
-| Format | RDNA 2 (RX 6000) | RDNA 3 (RX 7000) | RDNA 4 (RX 9000) |
+| Format | RDNA 2 (RX 6000) | RDNA 3 (RX 7000) | RDNA 4 (RX 8000 / RX 9000) |
 |---|:--:|:--:|:--:|
 | FP32 (vector) | ✓ | ✓ | ✓ |
 | FP16 (WMMA) | — | ✓ | ✓ |
@@ -178,7 +189,7 @@ The two are *not* the same hardware path and have very different LLM-serving cha
 
 **RDNA 3 (RX 7900 XTX / 7900 XT / 7800 XT / 7700 XT)** — first WMMA generation. FP16/BF16/INT8/INT4 work; FP8 path is limited and depends on kernel availability.
 
-**RDNA 4 (RX 9000 series, 2025+)** — WMMA gen-3. Adds **native FP8** (E4M3 + E5M2), **2:4 structured sparsity** (effectively doubling peak TFLOPS on supported kernels), and improved INT4/INT8 throughput. The first consumer Radeon arch that's seriously competitive for LLM inference.
+**RDNA 4 (RX 8000 / RX 9000 series, 2025+)** — WMMA gen-3. Early roadmaps used the RX 8000 name; AMD officially shipped under the RX 9000 brand. Adds **native FP8** (E4M3 + E5M2), **2:4 structured sparsity** (effectively doubling peak TFLOPS on supported kernels), and improved INT4/INT8 throughput. The first consumer Radeon arch that's seriously competitive for LLM inference.
 
 ## CDNA (Instinct datacenter) — MFMA
 
@@ -196,7 +207,17 @@ The two are *not* the same hardware path and have very different LLM-serving cha
 
 **CDNA 3 (MI300X)** — AMD's Hopper competitor. 192 GB HBM3 per card, FP8 MFMA. Massive memory + competitive FP8 throughput; the option to look at if you want to escape NVIDIA's data-center pricing.
 
-**CDNA 4 (MI350 / MI400)** — AMD's Blackwell competitor. Adds FP6 / FP4 / MXFP* native paths. NVFP4 isn't supported per se (it's NVIDIA-proprietary), but AMD targets equivalent block-scaled FP4 formats.
+**CDNA 4 (MI350 / MI400)** — AMD's Blackwell competitor. Adds FP6 / FP4 / MXFP* native paths. **Note: NVFP4 specifically is NVIDIA-proprietary (E2M1 data + per-16-element E4M3 scaling)** and AMD doesn't support it. What AMD supports on CDNA 4 are the *OCP-standard* block-scaled FP4/FP6 formats (per-32-element E8M0 scales — MXFP4 / MXFP6) plus AMD-defined variants. For cross-vendor portability the safer 4-bit target is MXFP4; NVFP4 is a NVIDIA-only optimization.
+
+## AMD KV cache options
+
+| KV format | RDNA 3 (RX 7000) | RDNA 4 (RX 8000/9000) | CDNA 2 (MI200) | CDNA 3 (MI300) | CDNA 4 (MI350+) | Stack |
+|---|:--:|:--:|:--:|:--:|:--:|---|
+| FP16 / BF16 | ✓ | ✓ | ✓ | ✓ | ✓ | universal — vLLM ROCm / llama.cpp |
+| FP8 | ✗ | ✓ native | ✗ | ✓ native | ✓ native | vLLM ROCm on CDNA 3+ / RDNA 4 |
+| INT8 | ✓ | ✓ | ✓ | ✓ | ✓ | quant scheme dependent |
+| MXFP* block-scaled | ✗ | ✗ | ✗ | 🟡 emerging | ✓ | AMD's NVFP4 equivalent; Composable Kernel landing |
+| llama.cpp `q4_0` / `q5_0` / `q8_0` | ✓ | ✓ | ✓ | ✓ | ✓ | ROCm backend — most portable on consumer Radeon |
 
 ## What this means for LLM serving on AMD
 
@@ -221,10 +242,14 @@ When future composes want to detect the host GPU and pick an optimal path, here'
 
 ```
 1. Detect vendor + arch
-   - NVIDIA: torch.cuda.get_device_capability() → (major, minor)
-   - Intel:  torch.xpu.is_available() + sycl device query
-   - AMD:    torch.cuda.is_available() (HIP appears as CUDA) + rocm_smi
-   - Apple:  torch.backends.mps.is_available() (out of scope for these composes)
+   - NVIDIA: torch.cuda.is_available() and torch.version.hip is None
+             → torch.cuda.get_device_capability()  →  (major, minor)
+   - AMD:    torch.cuda.is_available() and torch.version.hip is not None
+             → torch.cuda.get_device_properties(0).gcnArchName  →  e.g. "gfx1100" (RDNA3)
+             → confirm via `rocm-smi --showproductname` or env $ROCM_PATH
+             ⚠ HIP-via-PyTorch appears as `cuda` — distinguish via torch.version.hip, NOT torch.cuda
+   - Intel:  torch.xpu.is_available()  →  sycl device query, parse arch via clinfo or sycl-ls
+   - Apple:  torch.backends.mps.is_available()  (out of scope for these composes)
 
 2. Map to capability tier
    - NVIDIA sm_120 / sm_10x   → Blackwell tier (FP4 / NVFP4 / MXFP* available)
