@@ -102,7 +102,7 @@ services:
   vllm-gemma-4-31b-dflash-int8:
     # SAME pin as dual-dflash.yml — DFlash overlay was rebased to e47c98ef.
     # See ../../patches/vllm-gemma4-dflash-int8/README.md for the merge resolution.
-    image: vllm/vllm-openai:nightly-e47c98ef7a38792996e452ef53914e21e41928e9
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-${VLLM_NIGHTLY_SHA}}
     container_name: "${ESTATE_CONTAINER:-vllm-gemma-4-31b-dflash-int8}"
     restart: "no"
     ports:

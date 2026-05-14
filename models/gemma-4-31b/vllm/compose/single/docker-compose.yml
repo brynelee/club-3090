@@ -56,7 +56,7 @@
 # Requires-sm: 9.0+
 services:
   vllm-gemma-4-31b-mtp-tp1:
-    image: vllm/vllm-openai:nightly-1acd67a795ebccdf9b9db7697ae9082058301657
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-${VLLM_NIGHTLY_SHA}}
     container_name: "${ESTATE_CONTAINER:-vllm-gemma-4-31b-mtp-tp1}"
     restart: "no"
     ports:

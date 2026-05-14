@@ -96,7 +96,7 @@
 # Tensor-parallel: 2
 services:
   vllm-gemma-4-31b-mtp-bf16:
-    image: vllm/vllm-openai:nightly-1acd67a795ebccdf9b9db7697ae9082058301657
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-${VLLM_NIGHTLY_SHA}}
     container_name: "${ESTATE_CONTAINER:-vllm-gemma-4-31b-mtp-bf16}"
     restart: "no"
     ports:

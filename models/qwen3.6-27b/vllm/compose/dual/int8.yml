@@ -31,7 +31,7 @@ services:
     # cut, post Gemma 4 MTP merge + INT8 PTH KV path (vllm#40391). Pin matches
     # so head-to-head TPS deltas reflect model intrinsics, not vLLM-version
     # drift between Qwen and Gemma legs.
-    image: vllm/vllm-openai:nightly-1acd67a795ebccdf9b9db7697ae9082058301657
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-${VLLM_NIGHTLY_SHA}}
     container_name: "${ESTATE_CONTAINER:-vllm-qwen36-27b-dual-int8}"
     restart: "no"
     ports:

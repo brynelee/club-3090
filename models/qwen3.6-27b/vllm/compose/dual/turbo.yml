@@ -52,7 +52,7 @@
 # Tensor-parallel: 2
 services:
   vllm-qwen36-27b-dual-turbo:
-    image: vllm/vllm-openai:nightly-1acd67a795ebccdf9b9db7697ae9082058301657
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:nightly-${VLLM_NIGHTLY_SHA}}
     container_name: "${ESTATE_CONTAINER:-vllm-qwen36-27b-dual-turbo}"
     restart: "no"
     ports:
