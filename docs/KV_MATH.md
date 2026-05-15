@@ -8,10 +8,10 @@ Four model families are documented:
 |---|---|---|
 | **Qwen 3.6 27B** (dense) | Calibrated 11/11 on this stack | Qwen3-Next hybrid: 16 full-attention + 48 GDN (Gated DeltaNet) layers |
 | **Gemma 4 31B** (dense) | Calibrated 7/7 on this stack | Sliding-window + dense MLP: 50 SWA + 10 full-attention layers |
-| **Qwen 3.6 35B-A3B** (MoE) | Math-ready, calibration pending | Qwen3-Next hybrid + MoE: 30 GDN + 10 gated-attention layers |
-| **Gemma 4 26B-A4B** (MoE) | Math-ready, calibration pending | Sliding-window + dense MoE: SWA + occasional global layers |
+| **Qwen 3.6 35B-A3B** (MoE) | **Config-verified, calibration pending** | Qwen3-Next hybrid + MoE: 30 GDN + 10 gated-attention layers. Confirmed from `config.json` 2026-05-15 — see [Qwen section](#qwen-36-35b-a3b-moe--per-card-budget-components). |
+| **Gemma 4 26B-A4B** (MoE) | **Config-verified, calibration pending** | Sliding-window + dense MoE: 25 SWA + 5 full-attention layers. **Asymmetric KV heads** (8 sliding / 2 global). Confirmed from `config.json` 2026-05-15 — see [Gemma section](#gemma-4-26b-a4b-moe--per-card-budget-components). |
 
-For models marked **calibration pending**, the architectural math derivations below are anchored to published config + model card material; absolute numbers ship as estimates until we measure them on the stack. See [Sources of Error & Accuracy](#sources-of-error--accuracy) at the end.
+For models marked **config-verified, calibration pending**: architectural facts (layer counts, head dims, K=V tying, MoE expert counts, layer-type pattern) are sourced directly from the on-disk `config.json` and `layer_types` arrays — not estimates. What remains pending is the **empirical activation-peak coefficient** for each (model, KV-format) pair, which needs ≥4 measured BENCHMARKS rows per model. See [Sources of Error & Accuracy](#sources-of-error--accuracy) at the end.
 
 ## TL;DR
 
@@ -91,9 +91,9 @@ Per-model sections below derive each term concretely.
 | Model | Total layers | Growing layers | Sliding / fixed | KV heads | Head dim | K=V tied | MoE | Special notes |
 |---|---:|---:|---:|---:|---:|:---:|:---:|---|
 | **Qwen 3.6 27B** | 64 | 16 (full-attention) | 48 (GDN recurrent) | 4 | 256 | No (×2) | No | DeltaNet block-wise activation peak (Cliff 2). `linear_attn` in-proj stays fp16 even under INT4 quant. |
-| **Qwen 3.6 35B-A3B** | 40 | 10 (gated attention) | 30 (Gated DeltaNet) | 2 | 256 | No (×2) | Yes | Pattern: `10 × (3× GDN → MoE → 1× Gated Attn → MoE)`. Active params ~3B, total 35B. MoE experts gate decode FLOPs but not KV size. |
+| **Qwen 3.6 35B-A3B** | 40 | **10** (gated attention at idx 3,7,11,15,19,23,27,31,35,39) | 30 (Gated DeltaNet) | **2** | 256 | No (×2) | Yes — **256 experts × 8 active** | `full_attention_interval=4`: every 4th layer is attention. Built-in MTP (`mtp_num_hidden_layers=1`). `attn_output_gate=True` (gated attention). Vision-capable. Active params ~3B, total 35B. |
 | **Gemma 4 31B** | 60 | 10 (full-attention) | 50 (SWA, window=1024) | 16 | 256 sliding / **512 global** | Yes (×1) | No | Global layers use 2× head_dim of sliding layers. K=V tying confirmed empirically against boot-log KV cache reports. |
-| **Gemma 4 26B-A4B** | TBD (likely ~40-48) | TBD (likely sparse global) | Majority SWA (window=1024) | TBD | TBD | Likely yes (×1) | Yes | A4B = 4B active params from 26B total. Layer pattern from model card README. **Numbers pending config.json + first boot.** |
+| **Gemma 4 26B-A4B** | **30** | **5** (full-attention at idx 5,11,17,23,29) | 25 (SWA, window=1024) | **8 sliding / 2 global** (asymmetric) | 256 sliding / **512 global** | **Yes (×1)** | Yes — **128 experts × 8 active** | Asymmetric KV-head split per layer type. Every 6th layer is global, last layer always global. Per-token growing KV is **~16× smaller** than Gemma 4 31B (see [Gemma section](#gemma-4-26b-a4b-moe--per-card-budget-components)). Vision + audio support. **No Genesis required.** |
 
 **Hybrid quirks to internalize:**
 
@@ -274,30 +274,37 @@ Only present on `dual-dflash*.yml` composes. `z-lab/Qwen3.6-27B-DFlash` is a ~1.
 
 ## Qwen 3.6 35B-A3B (MoE) — per-card budget components
 
-**Status**: math-ready, **calibration pending** (not yet served on this stack). Numerical values below are derived from the architecture pattern in the model card; expect re-calibration once we measure boot peaks.
+**Status**: **config-verified** (architecture confirmed from on-disk `config.json` 2026-05-15), **calibration pending** (not yet served on this stack — activation coefficients TBD). All architectural numbers below are sourced from the model checkpoint, not estimates.
 
 ### Architecture summary
 
-Qwen 3.6 35B-A3B is a Qwen3-Next hybrid MoE:
+Qwen 3.6 35B-A3B is a Qwen3-Next hybrid MoE (`model_type: qwen3_5_moe`, `architectures: Qwen3_5MoeForConditionalGeneration`):
 
-- 40 transformer layers
-- Pattern: `10 × (3× Gated DeltaNet → MoE → 1× Gated Attention → MoE)`
-- **10 growing-attention layers** (gated attention with KV cache)
-- **30 GDN layers** (recurrent state, fixed size)
-- MoE: 128 experts, 8 active per token (typical Qwen3-Next MoE config — verify from `config.json`)
+- **40 transformer layers**
+- `full_attention_interval: 4` → every 4th layer is full attention; the other 3 are Gated DeltaNet
+- `layer_types` array confirms **10 full_attention layers at indices [3, 7, 11, 15, 19, 23, 27, 31, 35, 39]** + **30 linear_attention (GDN) layers**
+- **2 KV heads** (`num_key_value_heads: 2`) — caps `valid_tp` at `[1, 2]`
+- **16 attention heads**, **head_dim: 256**
+- **MoE: 256 experts, 8 active per token** (was estimated as 128 — real config has 2× more experts)
+- `moe_intermediate_size: 512`, `shared_expert_intermediate_size: 512`
+- Built-in MTP drafter (`mtp_num_hidden_layers: 1`) — same pattern as Qwen 3.6 27B
+- `attn_output_gate: True` — gated attention
+- Vision-capable (`vision_config` + image/video token IDs present)
 - Active params: ~3B; total params: 35B
 
 ### 1. Model weights
 
-MoE weights are dominated by the expert FFNs. Per-card budget under TP:
+MoE weights are dominated by the expert FFNs. **5 quant variants on disk** as of 2026-05-15:
 
-| Quant (planned) | On-disk estimate | Per-card at TP=2 |
-|---|---:|---:|
-| AutoRound INT4 (when available) | ~22-25 GB | 11-12 GB |
-| AWQ-4bit (community) | ~22-25 GB | 11-12 GB |
-| BF16 (unquantized) | ~70 GB | 35 GB (does not fit on 24 GB) |
+| Quant | On-disk | Per-card at TP=2 | Notes |
+|---|---:|---:|---|
+| AutoRound INT4 (`qwen3.6-35b-a3b-autoround-int4`) | 20 GB | 10 GB | Production; matches our Qwen 3.6 27B AutoRound pipeline |
+| GPTQ INT4 (`qwen3.6-35b-a3b-gptq-int4`) | 22 GB | 11 GB | Experimental |
+| GGUF (`qwen3.6-35b-a3b-gguf`) | 90 GB | n/a (llama.cpp single-card path) | Multi-bit-depth |
+| DFlash variants (`*-dflash`, `*-dflash-gguf`) | variable | n/a | Experimental (z-lab) |
+| BF16 unquantized | ~70 GB | 35 GB | Does not fit on 24 GB |
 
-Like the dense Qwen 3.6 27B, DeltaNet `linear_attn` in-projection layers will likely stay at fp16 even under INT4 quantization. The byte count will be included in the total checkpoint size.
+Like the dense Qwen 3.6 27B, DeltaNet `linear_attn` in-projection layers stay at fp16 even under INT4 quantization. The byte count is included in the total checkpoint size.
 
 **Note**: MoE expert weights all live in VRAM (they're sparse-activated at FLOPs level, not at memory level). Don't confuse "active params" with "loaded params" — the budget is for the full 35B.
 
@@ -463,84 +470,118 @@ At TP > 1, drafter weights shard across cards (`drafter_gb / TP`).
 
 ### Architecture summary
 
-Gemma 4 26B-A4B is a Gemma 4 MoE with sliding-window attention:
+Gemma 4 26B-A4B is a Gemma 4 MoE (`model_type: gemma4`, `architectures: Gemma4ForConditionalGeneration`):
 
-- Likely ~40-48 transformer layers (smaller than Gemma 4 31B's 60)
-- Sliding-window + occasional global layers (Gemma 4 family pattern); final layer typically global
-- Sliding window 1024 (same as 31B)
-- K=V tying expected (Gemma 4 family convention)
-- MoE: number of experts + active-per-token TBD from `config.json`
+- **30 transformer layers** (notably smaller than Gemma 4 31B's 60)
+- `layer_types` array confirms **5 full_attention layers at indices [5, 11, 17, 23, 29]** + **25 sliding_attention layers**
+- Pattern: every 6th layer is global; **last layer is always global** (per Gemma 4 family convention)
+- `sliding_window: 1024`
+- **`attention_k_eq_v: True`** — K and V share storage (×1)
+- **Asymmetric KV head counts** (the big architectural surprise vs Gemma 4 31B):
+  - `num_key_value_heads: 8` — for sliding-attention layers
+  - `num_global_key_value_heads: 2` — for full-attention layers
+- `head_dim: 256` (sliding), `global_head_dim: 512` (global)
+- **MoE: 128 experts, 8 active per token** (`top_k_experts: 8` in config)
+- `moe_intermediate_size: 704`
+- Multimodal: `vision_config` + `audio_config` token IDs + image/video token IDs present
+- **Does NOT require Genesis** (Gemma 4 family has no DeltaNet quirks)
 - Active params: ~4B; total params: 26B
-
-**Exact layer counts pending the model's actual config.json on disk.** The placeholders below show the math shape — substitute real values once measured.
 
 ### 1. Model weights
 
-| Quant (planned) | On-disk estimate | Per-card at TP=2 |
-|---|---:|---:|
-| AutoRound INT4 (when available) | ~16-18 GB | 8-9 GB |
-| BF16 (unquantized) | ~52 GB | 26 GB (does not fit on 24 GB) |
+| Quant | On-disk | Per-card at TP=2 | Notes |
+|---|---:|---:|---|
+| **Intel AutoRound INT4 mixed** (`gemma-4-26b-a4b-autoround-int4-mixed`) | ~14-15 GB | 7-8 GB | Production target. Mixed precision protects routing-critical layers; matches our AutoRound pipeline. |
+| Intel AutoRound INT4 (pure) | ~13 GB | 6.5 GB | Alternative; slightly worse routing quality than mixed. |
+| Community AWQ-4bit (cyankiwi) | ~13-14 GB | 6.5-7 GB | Different quant pipeline → activation coefficients don't transfer from our AutoRound calibration. |
+| BF16 (unquantized) | ~52 GB | 26 GB | Does not fit on 24 GB. |
 
-MoE expert weights all live in VRAM (sparse-activation at FLOPs, not at memory). Active-params count (4B) doesn't reduce the loaded budget.
+MoE expert weights all live in VRAM (sparse-activation at FLOPs level, not at memory). Active-params count (4B) doesn't reduce the loaded budget.
 
-### 2. KV pool — growing portion (global layers only)
+### 2. KV pool — growing portion (5 full_attention layers)
 
-Estimated `N_global` global layers (TBD from README; Gemma 4 family typically uses 1 global per 5 sliding):
-
-```
-per_token_bytes_growing = N_global × num_kv_heads × global_head_dim × 1 (K=V tied) × bpe
-```
-
-If `N_global = 8` and shape matches 31B family (`num_kv_heads=16`, `global_head_dim=512`):
+The asymmetric KV head count dramatically reduces per-token growing KV vs Gemma 4 31B:
 
 ```
-per_token_bytes_growing = 8 × 16 × 512 × 1 × bpe = 65,536 × bpe bytes
+per_token_bytes_growing = num_full_attn_layers × num_global_kv_heads × global_head_dim × 1 (K=V tied) × bpe
+                        = 5 × 2 × 512 × 1 × bpe
+                        = 5,120 × bpe bytes
 ```
 
-That's ~80% of Gemma 4 31B's growing KV per token. INT8 KV remains the right format for 24 GB Ampere at long contexts.
+**Compare to Gemma 4 31B's growing KV** = `10 × 16 × 512 × 1 × bpe = 81,920 × bpe bytes` per token. The 26B-A4B is **~16× lighter per token**:
 
-### 3. KV pool — fixed sliding portion
+- Fewer full-attention layers: 5 vs 10
+- Fewer KV heads on global layers: 2 vs 16
+- Same head_dim and K=V tying
+
+| KV format | bpe | per-token growing KV (TP=1) | per-token (TP=2) |
+|---|---:|---:|---:|
+| `bf16` / `fp16` | 2.0 | 10,240 B (~10 KB) | 5,120 B |
+| `fp8_e5m2` / `fp8_e4m3` | 1.0 | 5,120 B (~5 KB) | 2,560 B |
+| `int8_per_token_head` | ~1.01 | ~5,170 B | ~2,585 B |
+| `q4_0` | ~0.56 | ~2,867 B | ~1,434 B |
+
+**Implication**: at 200K context, growing KV pool per card at TP=2 + fp8 = `2,560 × 200,000 = ~512 MB`. **The 26B-A4B is extremely KV-light** — even at full 262K context, growing KV per card is under 700 MB at fp8. The constraint shifts decisively to weights + activation peak, NOT to KV.
+
+This means BF16 KV becomes viable at 262K on Ampere consumer cards (~1.3 GB growing KV per card) — a contrast to Gemma 4 31B where INT8 PTH was the unlock for long context.
+
+### 3. KV pool — fixed sliding portion (25 sliding_attention layers)
+
+The 25 SWA layers maintain a fixed-size KV window (`sliding_window: 1024`):
 
 ```
-sliding_kv_bytes_total = N_sliding × num_kv_heads × head_dim × 1 (K=V tied) × bpe × 1024
+sliding_kv_bytes_total = num_sliding_layers × num_kv_heads × head_dim × 1 (K=V tied) × bpe × sliding_window
+                       = 25 × 8 × 256 × 1 × bpe × 1024
+                       = 52,428,800 × bpe bytes
+                       ≈ 50 MB × bpe
 ```
 
-If `N_sliding = 32` and shape matches 31B (`head_dim=256`):
+**Constant** — doesn't scale with `max_ctx` or `max_num_seqs`. At fp8 KV: ~50 MB per card (TP=1) or ~25 MB at TP=2. Negligible.
 
-```
-sliding_kv_bytes_total = 32 × 16 × 256 × 1 × bpe × 1024 = 134,217,728 × bpe bytes ≈ 128 MB × bpe
-```
+Note: this is dramatically smaller than Gemma 4 31B's sliding portion (`50 × 16 × 256 × 1 × bpe × 1024 ≈ 200 MB × bpe`) due to fewer sliding layers (25 vs 50) and fewer KV heads (8 vs 16).
 
-Constant; doesn't scale with `max_ctx`.
+### 4. Activation peak (SWA prefill + dense MoE intermediate buffer)
 
-### 4. Activation peak
+Same mechanism as Gemma 4 31B (SWA prefill + dense MoE intermediate buffer). MoE adds small per-expert routing overhead but **shouldn't dominate**.
 
-Same mechanism as Gemma 4 31B (SWA prefill + dense MoE intermediate buffer). MoE may add a small per-expert routing overhead but **shouldn't dominate**. Empirical coefficient TBD; expected ~1-2 GB at TP=2.
+Projected coefficient (calibration pending; expect ≥4 BENCHMARKS rows before locking in):
 
-### 5. MoE considerations
+| KV format | Projected bytes/layer/token | Reasoning |
+|---|---:|---|
+| `bf16` / `fp16` | ~1.0-1.5 KB | Smaller than Gemma 4 31B due to fewer total layers (30 vs 60) and smaller `hidden_size` (2816 vs 5376) |
+| `fp8_e5m2` / `int8_per_token_head` | ~1.0-1.5 KB | Similar to BF16; minimal dequant overhead |
 
-Same as Qwen 3.6 35B-A3B MoE:
+Expected activation peak: ~1-2 GB at TP=2 dual-card configs, but **calibration TBD**.
 
-- Router workspace (~100-200 MB, one-time)
-- Expert dispatch buffers (~200-400 MB per card)
-- No KV-side impact from MoE
+### 5. MoE-specific considerations
+
+Same accounting as Qwen 3.6 35B-A3B:
+
+- **Router workspace**: `hidden_size × num_experts` = `2816 × 128` ≈ 360 K weights. Tiny (~700 KB at BF16). One-time cost.
+- **Expert dispatch buffers**: vLLM allocates buffers for top-k expert routing. Empirical ~200-400 MB per card.
+- **No KV-side impact**: MoE only gates FFN compute. KV cache for full-attention layers is unaffected.
 
 ### 6. Cudagraph + workspace overhead + drafter
 
-Same empirical form as 31B; drafter family TBD (Google may release a Gemma 4 26B MTP assistant similar to the 31B-it-assistant).
+Same empirical form as Gemma 4 31B; standard `0.5 + 1.0 × mem_util + 0.3 × (TP - 1) GB`.
+
+**Drafter family**:
+- `google/gemma-4-26B-A4B-it-assistant` released as MTP drafter (~0.5-1 GB, FP16). Same pattern as our existing `gemma-4-31b-it-assistant` drafter.
+- `z-lab/gemma-4-26B-A4B-it-DFlash` released as DFlash drafter (community).
 
 ### Estimated per-card budget at TP=2, 24 GB VRAM
 
-| Term | Value (INT8 KV, 100K ctx, seqs=1) | Notes |
+| Term | Value (fp8 KV, 200K ctx, seqs=1) | Notes |
 |---|---:|---|
-| Weights / 2 | ~8-9 GB | INT4 quant |
-| KV pool growing | ~3-4 GB | 100K × 32 KB/tok = ~3.2 GB |
-| KV pool sliding | ~0.13 GB | Constant |
-| Activation peak | ~1-2 GB | Smaller than 31B if fewer total layers |
-| Cudagraph + overhead | ~1.2 GB | |
-| **Predicted peak** | **~13-17 GB** | Comfortable headroom on 24 GB, fits 20 GB at lower ctx |
+| Weights / 2 | ~7-8 GB | AutoRound INT4 mixed (~14-15 GB on-disk) |
+| KV pool growing | ~0.5 GB | Asymmetric KV heads + few global layers |
+| KV pool sliding | ~0.05 GB | Constant; trivially small |
+| Activation peak | ~1-2 GB | Smaller than Gemma 4 31B |
+| Cudagraph + overhead | ~1.2 GB | Empirical fit |
+| MoE expert dispatch buffers | ~0.3 GB | Per-card |
+| **Predicted peak** | **~10-12 GB** | Massive headroom on 24 GB; could likely run at higher mem_util or push to BF16 KV at full 262K |
 
-**Calibration pending**. Numbers will shift once real `config.json` values replace estimates.
+**Calibration pending**. The headline finding to verify on first boot: Gemma 4 26B-A4B at full 262K context should fit on a single 3090 with INT4 weights — single-card serving may be the right default for this model.
 
 ## Best practices for building a KV calculator
 
