@@ -16,6 +16,27 @@ history; SemVer takes over from `v0.3.0` onward.
 
 ---
 
+## v0.7.1 — 2026-05-15
+
+
+### ✨ Features
+
+- feat(bench): surface prompt processing throughput ([2a148d7](https://github.com/noonghunna/club-3090/commit/2a148d702b9415129d4c4ec9d3e7d30765927aa4))
+- feat(llamacpp): expose batch tuning knobs ([02249ab](https://github.com/noonghunna/club-3090/commit/02249ab1939f354ac062d343efefe32677203174))
+
+
+### 🐛 Bug fixes
+
+- fix(ci): simplify vllm image workflow, drop smoke-gate (#135) ([ce2617e](https://github.com/noonghunna/club-3090/commit/ce2617e0bc0f56d42caf64e96847d966380be80c))
+
+
+### 📝 Documentation
+
+- docs(upstream): PR #42102 closed-as-slop; local overlay permanent ([57eb269](https://github.com/noonghunna/club-3090/commit/57eb269cd70935fc3069b85e46ead8f0f0af13dc))
+
+
+
+[Pin: `git checkout v0.7.1`] · [Full diff](https://github.com/noonghunna/club-3090/compare/v0.7.0...v0.7.1)
 ## v0.7.0 — 2026-05-14
 
 
