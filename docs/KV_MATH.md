@@ -84,7 +84,41 @@ peak ≈ weights/TP                                  ← exact, from checkpoint 
      + drafter_overhead/TP                         ← speculative-decoding drafter weights, if any
 ```
 
+### DeltaNet recurrent state (DeltaNet-family models only)
+
+Hybrid DeltaNet models (Qwen3-Next family) maintain a fixed-size recurrent state between tokens, separate from the per-token growing KV. This state is tiny but worth noting for completeness:
+
+```
+delta_state_bytes ≈ num_gdn_layers
+                  × (linear_num_k_heads × linear_k_head_dim
+                     + linear_num_v_heads × linear_v_head_dim
+                     + linear_conv_kernel_dim × (linear_num_k_heads × linear_k_head_dim
+                                                  + linear_num_v_heads × linear_v_head_dim))
+                  × 4 (fp32, mamba_ssm_dtype)
+                  × max_num_seqs
+```
+
+Three components per layer: K state + V state + conv1d kernel state. All four `linear_*` fields are in `config.json → text_config`. Concrete sizes for our models in per-model §"DeltaNet recurrent state" subsections — typically single-digit MB total, negligible vs activation peak.
+
 Per-model sections below derive each term concretely.
+
+## Quick reference: per-token growing-KV bytes
+
+Headline numbers for the four shipping models, computed from each per-model formula in the deep sections. Useful for at-a-glance capacity planning.
+
+| Model | bf16 (TP=1 / TP=2) | fp8_e5m2 (TP=1 / TP=2) | INT8 PTH or TQ3 (TP=1 / TP=2) |
+|---|---:|---:|---:|
+| Qwen 3.6 27B | 65,536 B / 32,768 B | 32,768 B / 16,384 B | **13,927 B / 6,963 B** (TQ3) |
+| Qwen 3.6 35B-A3B (MoE) | 20,480 B / 10,240 B | 10,240 B / 5,120 B | **4,352 B / 2,176 B** (TQ3) |
+| Gemma 4 31B | 163,840 B / 81,920 B | 81,920 B / 40,960 B | ~82,700 B / ~41,400 B (INT8 PTH) |
+| Gemma 4 26B-A4B (MoE) | **10,240 B / 5,120 B** | 5,120 B / 2,560 B | ~5,170 B / ~2,585 B (INT8 PTH) |
+
+**What jumps out:**
+
+- **Gemma 4 26B-A4B vs 31B**: ~16× smaller per-token growing KV thanks to asymmetric KV head counts (2 global vs 16). At 200K context + fp8 + TP=2, growing KV per card is ~512 MB for the MoE vs ~8 GB for the 31B. Long-context serving on 24 GB Ampere is dramatically cheaper.
+- **Qwen 3.6 35B-A3B vs 27B**: ~3.2× smaller per token (10 growing layers × 2 KV heads vs 16 × 4). The MoE shifts the bottleneck from KV to weights + activation.
+- **Sliding-window KV** for Gemma models is **fixed** (not per-token): ~50 MB total (26B-A4B) / ~200 MB total (31B) at bf16. Excluded from per-token math but included in the per-model deep sections.
+- **TQ3 (Genesis) only applies to Qwen-family** (DeltaNet kernel dependency); **INT8 PTH (PR #40391/#42102) is the long-context unlock for Gemma family on Ampere**.
 
 ## Model architecture summary
 
@@ -210,7 +244,7 @@ In the Qwen3-Next hybrid architecture, **only the 16 full_attention layers contr
 Applying the general formula:
 
 ```
-per_token_bytes = 16 (growing layers) × 4 (kv_heads) × 256 (head_dim) × 2 (k_v_tensors — no K=V tie) × bpe
+per_token_bytes = 16 (growing layers) × 4 (kv_heads) × 256 (head_dim) × k_v_tensors (2, no K=V tie) × bpe
                 = 32,768 × bpe bytes
 ```
 
@@ -326,7 +360,7 @@ Like the dense Qwen 3.6 27B, DeltaNet `linear_attn` in-projection layers stay at
 Applying the general formula:
 
 ```
-per_token_bytes = 10 (growing layers) × 2 (kv_heads) × 256 (head_dim) × 2 (k_v_tensors — no K=V tie) × bpe
+per_token_bytes = 10 (growing layers) × 2 (kv_heads) × 256 (head_dim) × k_v_tensors (2, no K=V tie) × bpe
                 = 10,240 × bpe bytes
 ```
 
@@ -425,7 +459,7 @@ Two shipped quants on this stack: AutoRound INT4 (default) and AWQ-4bit (Tier 2 
 Each stores K and V at `global_head_dim=512`, with K==V tying meaning a single store per element:
 
 ```
-per_token_bytes_growing = 10 (growing layers) × 16 (kv_heads) × 512 (global_head_dim) × 1 (k_v_tensors — K=V tied) × bpe
+per_token_bytes_growing = 10 (growing layers) × 16 (kv_heads) × 512 (global_head_dim) × k_v_tensors (1, K=V tied) × bpe
                         = 81,920 × bpe bytes
 ```
 
@@ -527,7 +561,7 @@ MoE expert weights all live in VRAM (sparse-activation at FLOPs level, not at me
 The asymmetric KV head count dramatically reduces per-token growing KV vs Gemma 4 31B:
 
 ```
-per_token_bytes_growing = num_full_attn_layers × num_global_kv_heads × global_head_dim × 1 (k_v_tensors — K=V tied) × bpe
+per_token_bytes_growing = num_full_attn_layers × num_global_kv_heads × global_head_dim × k_v_tensors (1, K=V tied) × bpe
                         = 5 × 2 × 512 × 1 × bpe
                         = 5,120 × bpe bytes
 ```
