@@ -171,6 +171,26 @@ check_patches() {
 run_check "patches" check_patches
 
 # --------------------------------------------------------------------
+# Cold-start warmup (not a scored check)
+# --------------------------------------------------------------------
+# The first real inference after a multi-minute boot pays cudagraph/JIT
+# compile for that shape. Without this, [3/8] (a 30s-capped request) is the
+# one that eats the cold start and false-fails while every later check passes
+# on the now-warm engine. Fire one discard-result request with a generous cap
+# so all *scored* checks reflect warm-engine behavior. Failure here is
+# non-fatal (a real outage still surfaces on [3/8]).
+echo "[warmup] priming engine (cold cudagraph/JIT, up to 180s, not scored) ..."
+curl -sf -m 180 "${URL}/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"${MODEL}\",
+    \"messages\": [{\"role\": \"user\", \"content\": \"ping\"}],
+    \"max_tokens\": 1,
+    \"temperature\": 0.0,
+    \"chat_template_kwargs\": {\"enable_thinking\": false}
+  }" >/dev/null 2>&1 && echo "[warmup] engine warm" || echo "[warmup] warmup request did not return in 180s — [3/8] will surface a real outage if present"
+
+# --------------------------------------------------------------------
 # 3. Basic completion — Paris sanity
 # --------------------------------------------------------------------
 check_basic() {
