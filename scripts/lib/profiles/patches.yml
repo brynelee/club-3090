@@ -1,0 +1,529 @@
+schema_version: 1
+patches:
+  - id: qwen-vllm-marlin-pad
+    model: [qwen3.6-27b]
+    files:
+      - models/qwen3.6-27b/vllm/patches/vllm-marlin-pad
+    load_bearing_when:
+      - composes:
+          - vllm/dual
+          - vllm/dual-turbo
+          - vllm/dual-dflash
+          - vllm/dual-dflash-noviz
+          - vllm/dual-bf16
+          - vllm/dual-int8
+          - vllm/dual-tq3-mtp
+          - vllm/dual-tq3-mtp-genesis
+          - vllm/dual-tq3-nomtp
+          - vllm/dual-carnice-bf16mtp
+          - vllm/dual-qwopus-bf16mtp
+          - vllm/dual-nvlink
+          - vllm/dual-nvlink-turbo
+          - vllm/dual-nvlink-dflash
+          - vllm/dual-nvlink-dflash-noviz
+          - vllm/dual4
+          - vllm/dual4-dflash
+        reason: "AutoRound INT4 TP shards can fall below Marlin's output-feature tile floor."
+        evidence: "models/qwen3.6-27b/vllm/patches/vllm-marlin-pad/README.md; models/qwen3.6-27b/INTERNALS.md#dual-card-the-marlin-pad-sub-tile-n-patch-vllm40361"
+    delivery:
+      dockerfile_bake: true
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#40361
+      status: open
+      drop_when: "merged into the selected vLLM nightly and all affected composes pin beyond the merge"
+    status: verified
+
+  - id: qwen-vllm-pr35936-required-fallback
+    model: [qwen3.6-27b]
+    files:
+      - models/qwen3.6-27b/vllm/patches/vllm-pr35936-required-fallback
+    load_bearing_when:
+      - composes:
+          - vllm/default
+          - vllm/tools-text
+          - vllm/minimal
+          - vllm/long-text
+          - vllm/long-text-no-mtp
+          - vllm/long-vision
+          - vllm/bounded-thinking
+          - vllm/dual
+          - vllm/dual-turbo
+          - vllm/dual-dflash
+          - vllm/dual-dflash-noviz
+          - vllm/dual-bf16
+          - vllm/dual-int8
+          - vllm/dual-tq3-mtp
+          - vllm/dual-tq3-nomtp
+          - vllm/dual-carnice-bf16mtp
+          - vllm/dual-qwopus-bf16mtp
+          - vllm/dual-nvlink
+          - vllm/dual-nvlink-turbo
+          - vllm/dual-nvlink-dflash
+          - vllm/dual-nvlink-dflash-noviz
+          - vllm/dual4
+          - vllm/dual4-dflash
+        reason: "Qwen3-Coder tool_choice=required returns empty tool_calls[] unless the configured parser fallback is honored."
+        evidence: "docs/UPSTREAM.md#35936 row; models/qwen3.6-27b/vllm/patches/vllm-pr35936-required-fallback/README.md"
+    delivery:
+      dockerfile_bake: true
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#35936
+      status: open
+      drop_when: "merged or equivalent behavior lands in the selected vLLM nightly"
+    status: verified
+
+  - id: qwen-vllm-pr40798-rebased
+    model: [qwen3.6-27b]
+    files:
+      - models/qwen3.6-27b/vllm/patches/vllm-pr40798-rebased
+    load_bearing_when: []
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: false
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#40798
+      status: negative-local-result
+      drop_when: "delete after upstream workspace-manager path supersedes the diagnostic overlay"
+    status: suspect
+
+  - id: qwen-vllm-pr40914-k1-only
+    model: [qwen3.6-27b]
+    files:
+      - models/qwen3.6-27b/vllm/patches/vllm-pr40914-k1-only
+    load_bearing_when: []
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: false
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#40914
+      status: negative-local-result
+      drop_when: "delete after TQ+MTP K+1 routing is resolved upstream or by Genesis"
+    status: suspect
+
+  - id: qwen-qwen3coder-tool-parser-deferred-commit
+    model: [qwen3.6-27b]
+    files:
+      - models/qwen3.6-27b/vllm/patches/local/qwen3coder_tool_parser_deferred_commit.py
+    load_bearing_when:
+      - composes:
+          - vllm/default
+          - vllm/tools-text
+          - vllm/minimal
+          - vllm/long-text
+          - vllm/long-text-no-mtp
+          - vllm/long-vision
+          - vllm/bounded-thinking
+          - vllm/dual
+          - vllm/dual-turbo
+          - vllm/dual-dflash
+          - vllm/dual-dflash-noviz
+          - vllm/dual-bf16
+          - vllm/dual-int8
+          - vllm/dual-tq3-mtp
+          - vllm/dual-tq3-mtp-genesis
+          - vllm/dual-tq3-nomtp
+          - vllm/dual-carnice-bf16mtp
+          - vllm/dual-qwopus-bf16mtp
+          - vllm/dual-nvlink
+          - vllm/dual-nvlink-turbo
+          - vllm/dual-nvlink-dflash
+          - vllm/dual-nvlink-dflash-noviz
+          - vllm/dual4
+          - vllm/dual4-dflash
+        reason: "Qwen3-Coder streaming parser can silence SSE when prose mentions literal <tool_call>."
+        evidence: "docs/UPSTREAM.md#qwen3coder-tool-parser-sse-silence-on-prose-tool_call"
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps:
+      - composes:
+          - vllm/minimal
+          - vllm/dual
+          - vllm/dual-dflash
+          - vllm/dual-dflash-noviz
+          - vllm/dual-bf16
+          - vllm/dual-int8
+          - vllm/dual-tq3-mtp
+          - vllm/dual-tq3-nomtp
+          - vllm/dual-carnice-bf16mtp
+          - vllm/dual-qwopus-bf16mtp
+          - vllm/dual-nvlink
+          - vllm/dual-nvlink-dflash
+          - vllm/dual-nvlink-dflash-noviz
+          - vllm/dual4
+          - vllm/dual4-dflash
+        issue: "Known current coverage boundary from club-3090#72/#145 class: these composes do not invoke the local sidecar today."
+    upstream:
+      ref: club-3090#72
+      status: local-workaround
+      drop_when: "upstream vLLM parser fixes the deferred-start state machine and pinned engines include it"
+    status: verified
+
+  - id: qwen-vllm-pr41800-truncate-prompt-tokens
+    model: [qwen3.6-27b]
+    files:
+      - models/qwen3.6-27b/vllm/patches/vllm-pr41800-truncate-prompt-tokens
+    load_bearing_when:
+      - composes:
+          - vllm/default
+          - vllm/long-text
+          - vllm/long-text-no-mtp
+          - vllm/long-vision
+          - vllm/bounded-thinking
+          - vllm/dual-turbo
+          - vllm/dual-dflash
+          - vllm/dual-dflash-noviz
+          - vllm/dual-int8
+          - vllm/dual-tq3-mtp
+          - vllm/dual-tq3-mtp-genesis
+          - vllm/dual-tq3-nomtp
+          - vllm/dual-nvlink-turbo
+          - vllm/dual-nvlink-dflash
+          - vllm/dual-nvlink-dflash-noviz
+          - vllm/dual4-dflash
+        reason: "Pre-d5b31c95 engine pins reject agent clients that send truncate_prompt_tokens."
+        evidence: "docs/UPSTREAM.md#41800 row; models/qwen3.6-27b/vllm/patches/vllm-pr41800-truncate-prompt-tokens/README.md"
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#41800
+      status: merged
+      drop_when: "each affected engine profile pins a vLLM nightly after d5b31c95"
+    status: verified
+
+  - id: gemma-vllm-gemma4-dflash
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-gemma4-dflash
+    load_bearing_when:
+      - composes: [vllm/gemma-dflash]
+        reason: "Provides z-lab DFlash draft serving path for Gemma 4."
+        evidence: "BENCHMARKS.md#gemma-4-31b-community-experimental dual-dflash.yml rows"
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#41703
+      status: local-overlay
+      drop_when: "DFlash support lands in pinned vLLM nightly with equivalent behavior"
+    status: verified
+
+  - id: gemma-vllm-gemma4-dflash-int8
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-gemma4-dflash-int8
+    load_bearing_when:
+      - composes: [vllm/gemma-dflash-int8]
+        reason: "Partitions DFlash drafter KV from quantized target KV so Gemma 4 DFlash and INT8 PTH can coexist."
+        evidence: "docs/UPSTREAM.md#41559 row; BENCHMARKS.md#gemma-4-31b-community-experimental dual-dflash-int8.yml row"
+    delivery:
+      dockerfile_bake: true
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#42102
+      status: closed-local-fix-retained
+      drop_when: "upstream ships a maintainer-blessed fix for vllm#41559 and pinned nightly includes it"
+    status: verified
+
+  - id: gemma-vllm-gemma4-fp8-ampere
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-gemma4-fp8-ampere
+    load_bearing_when: []
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: false
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: club-3090-gemma4-fp8-ampere-probe
+      status: blocked-on-ampere-shared-memory
+      drop_when: "delete if upstream adds an Ampere-safe fp8_e5m2 Gemma 4 path"
+    status: suspect
+
+  - id: gemma-vllm-gemma4-tool-parser-fixes
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-gemma4-tool-parser-fixes
+    load_bearing_when:
+      - composes:
+          - vllm/gemma-int8
+          - vllm/gemma-int8-262k
+          - vllm/gemma-bf16
+          - vllm/gemma-int8-tq3
+        reason: "Stacks Gemma 4 tool-parser fixes for MTP streaming multi-tool calls and parser bounds."
+        evidence: "models/gemma-4-31b/vllm/patches/vllm-gemma4-tool-parser-fixes/README.md"
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#42006 + vllm-project/vllm#41991
+      status: open
+      drop_when: "both PRs merge and the selected nightly includes them"
+    status: verified
+
+  - id: gemma-vllm-perheadkv-hybridpage-fix
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-perheadkv-hybridpage-fix
+    load_bearing_when: []
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: false
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: local-diagnostic
+      status: diagnostic-overlay
+      drop_when: "delete after PR #40391/related page-size handling supersedes it"
+    status: suspect
+
+  - id: gemma-vllm-pr40108-rebased
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-pr40108-rebased
+    load_bearing_when:
+      - composes: [vllm/gemma-int8-tq3]
+        reason: "Adds TurboQuant + sliding-window/YOCO support needed for the Gemma 4 TQ3 probe; current Ampere path remains blocked."
+        evidence: "models/gemma-4-31b/vllm/patches/vllm-pr40108-rebased/README.md; docs/UPSTREAM.md#Gemma 4 + native TurboQuant KV on Ampere"
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#40108
+      status: open
+      drop_when: "merged into selected nightly or superseded by vllm#42637/#41123"
+    status: suspect
+
+  - id: gemma-vllm-pr40391-perheadkv
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-pr40391-perheadkv
+    load_bearing_when: []
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: false
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#40391
+      status: diagnostic-overlay
+      drop_when: "delete after rebased #40391 path or upstream equivalent is selected"
+    status: suspect
+
+  - id: gemma-vllm-pr40391-rebased
+    model: [gemma-4-31b]
+    files:
+      - models/gemma-4-31b/vllm/patches/vllm-pr40391-rebased
+    load_bearing_when:
+      - composes:
+          - vllm/gemma-int8
+          - vllm/gemma-int8-262k
+          - vllm/gemma-bf16
+        reason: "Pads hybrid Gemma 4 per-token-head KV cache layout so INT8/PTH long context can boot."
+        evidence: "models/gemma-4-31b/vllm/patches/vllm-pr40391-rebased/README.md; BENCHMARKS.md#gemma-4-31b-community-experimental dual-int8.yml rows"
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#40391
+      status: open-rebased-local
+      drop_when: "merged into selected nightly and verified on Gemma 4 long-context stress"
+    status: verified
+
+  - id: gemma-a4b-vllm-pr40886-awq-moe-keys
+    model: [gemma-4-26b-a4b]
+    files:
+      - models/gemma-4-26b-a4b/vllm/patches/vllm-pr40886-awq-moe-keys
+    load_bearing_when:
+      - composes:
+          - vllm/gemma-a4b-awq
+          - vllm/gemma-a4b-awq-mtp
+        reason: "Remaps compressed-tensors AWQ MoE expert keys so Gemma 4 26B-A4B AWQ loads."
+        evidence: "models/gemma-4-26b-a4b/vllm/patches/vllm-pr40886-awq-moe-keys/README.md; BENCHMARKS.md#moe-models"
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: true
+      genesis: false
+    delivery_gaps: []
+    upstream:
+      ref: vllm-project/vllm#40886
+      status: open
+      drop_when: "merged into selected nightly and Gemma A4B AWQ composes boot without the sidecar"
+    status: verified
+
+  - &genesis_env_patch
+    id: genesis-p4
+    model: [qwen3.6-27b]
+    files: []
+    genesis_env: GENESIS_ENABLE_P4
+    load_bearing_when: []
+    delivery:
+      dockerfile_bake: false
+      entrypoint_invoke: false
+      genesis: true
+    delivery_gaps: []
+    upstream:
+      ref: Sandermage/genesis-vllm-patches@v7.72.2
+      status: genesis-env-gated
+      drop_when: "Genesis patch retires or shipped composes stop exporting this env flag"
+    status: unverified
+  - <<: *genesis_env_patch
+    id: genesis-p15b-fa-varlen-clamp
+    genesis_env: GENESIS_ENABLE_P15B_FA_VARLEN_CLAMP
+  - <<: *genesis_env_patch
+    id: genesis-p38b-compile-safe
+    genesis_env: GENESIS_ENABLE_P38B_COMPILE_SAFE
+  - <<: *genesis_env_patch
+    id: genesis-p40
+    genesis_env: GENESIS_ENABLE_P40
+  - <<: *genesis_env_patch
+    id: genesis-p58-async-placeholder-fix
+    genesis_env: GENESIS_ENABLE_P58_ASYNC_PLACEHOLDER_FIX
+  - <<: *genesis_env_patch
+    id: genesis-p60-gdn-ngram-fix
+    genesis_env: GENESIS_ENABLE_P60_GDN_NGRAM_FIX
+  - <<: *genesis_env_patch
+    id: genesis-p60b-triton-kernel
+    genesis_env: GENESIS_ENABLE_P60B_TRITON_KERNEL
+  - <<: *genesis_env_patch
+    id: genesis-p61-qwen3-multi-tool
+    genesis_env: GENESIS_ENABLE_P61_QWEN3_MULTI_TOOL
+  - <<: *genesis_env_patch
+    id: genesis-p61b-streaming-overlap
+    genesis_env: GENESIS_ENABLE_P61B_STREAMING_OVERLAP
+  - <<: *genesis_env_patch
+    id: genesis-p62-struct-out-spec-timing
+    genesis_env: GENESIS_ENABLE_P62_STRUCT_OUT_SPEC_TIMING
+  - <<: *genesis_env_patch
+    id: genesis-p64-qwen3coder-mtp-streaming
+    genesis_env: GENESIS_ENABLE_P64_QWEN3CODER_MTP_STREAMING
+  - <<: *genesis_env_patch
+    id: genesis-p66-cudagraph-size-filter
+    genesis_env: GENESIS_ENABLE_P66_CUDAGRAPH_SIZE_FILTER
+  - <<: *genesis_env_patch
+    id: genesis-p67-tq-multi-query-kernel
+    genesis_env: GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL
+  - <<: *genesis_env_patch
+    id: genesis-p68-auto-force-tool
+    genesis_env: GENESIS_ENABLE_P68_AUTO_FORCE_TOOL
+  - <<: *genesis_env_patch
+    id: genesis-p69-long-ctx-tool-reminder
+    genesis_env: GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER
+  - <<: *genesis_env_patch
+    id: genesis-p72-profile-run-cap
+    genesis_env: GENESIS_ENABLE_P72_PROFILE_RUN_CAP
+  - <<: *genesis_env_patch
+    id: genesis-p74-chunk-clamp
+    genesis_env: GENESIS_ENABLE_P74_CHUNK_CLAMP
+  - <<: *genesis_env_patch
+    id: genesis-p78-tolist-capture-guard
+    genesis_env: GENESIS_ENABLE_P78_TOLIST_CAPTURE_GUARD
+  - <<: *genesis_env_patch
+    id: genesis-p81-fp8-block-scaled-m-le-8
+    genesis_env: GENESIS_ENABLE_P81_FP8_BLOCK_SCALED_M_LE_8
+  - <<: *genesis_env_patch
+    id: genesis-p82
+    genesis_env: GENESIS_ENABLE_P82
+  - <<: *genesis_env_patch
+    id: genesis-p83
+    genesis_env: GENESIS_ENABLE_P83
+  - <<: *genesis_env_patch
+    id: genesis-p87
+    genesis_env: GENESIS_ENABLE_P87
+  - <<: *genesis_env_patch
+    id: genesis-p91
+    genesis_env: GENESIS_ENABLE_P91
+  - <<: *genesis_env_patch
+    id: genesis-p94
+    genesis_env: GENESIS_ENABLE_P94
+  - <<: *genesis_env_patch
+    id: genesis-p98
+    genesis_env: GENESIS_ENABLE_P98
+  - <<: *genesis_env_patch
+    id: genesis-p99
+    genesis_env: GENESIS_ENABLE_P99
+  - <<: *genesis_env_patch
+    id: genesis-p100
+    genesis_env: GENESIS_ENABLE_P100
+  - <<: *genesis_env_patch
+    id: genesis-p101
+    genesis_env: GENESIS_ENABLE_P101
+  - <<: *genesis_env_patch
+    id: genesis-p103
+    genesis_env: GENESIS_ENABLE_P103
+  - <<: *genesis_env_patch
+    id: genesis-pn8-mtp-draft-online-quant
+    genesis_env: GENESIS_ENABLE_PN8_MTP_DRAFT_ONLINE_QUANT
+  - <<: *genesis_env_patch
+    id: genesis-pn9-independent-drafter-attn
+    genesis_env: GENESIS_ENABLE_PN9_INDEPENDENT_DRAFTER_ATTN
+  - <<: *genesis_env_patch
+    id: genesis-pn11-gdn-ab-contiguous
+    genesis_env: GENESIS_ENABLE_PN11_GDN_AB_CONTIGUOUS
+  - <<: *genesis_env_patch
+    id: genesis-pn12-ffn-intermediate-pool
+    genesis_env: GENESIS_ENABLE_PN12_FFN_INTERMEDIATE_POOL
+  - <<: *genesis_env_patch
+    id: genesis-pn13-cuda-graph-lambda-arity
+    genesis_env: GENESIS_ENABLE_PN13_CUDA_GRAPH_LAMBDA_ARITY
+  - <<: *genesis_env_patch
+    id: genesis-pn14-tq-decode-oob-clamp
+    genesis_env: GENESIS_ENABLE_PN14_TQ_DECODE_OOB_CLAMP
+  - <<: *genesis_env_patch
+    id: genesis-pn17-fa2-lse-clamp
+    genesis_env: GENESIS_ENABLE_PN17_FA2_LSE_CLAMP
+  - <<: *genesis_env_patch
+    id: genesis-pn19-scoped-max-split
+    genesis_env: GENESIS_ENABLE_PN19_SCOPED_MAX_SPLIT
+  - <<: *genesis_env_patch
+    id: genesis-pn22-local-argmax-tp
+    genesis_env: GENESIS_ENABLE_PN22_LOCAL_ARGMAX_TP
+  - <<: *genesis_env_patch
+    id: genesis-pn25-silu-inductor-safe
+    genesis_env: GENESIS_ENABLE_PN25_SILU_INDUCTOR_SAFE
+  - <<: *genesis_env_patch
+    id: genesis-pn26-sparse-v
+    genesis_env: GENESIS_ENABLE_PN26_SPARSE_V
+  - <<: *genesis_env_patch
+    id: genesis-pn30-ds-layout-spec-decode
+    genesis_env: GENESIS_ENABLE_PN30_DS_LAYOUT_SPEC_DECODE
+  - <<: *genesis_env_patch
+    id: genesis-pn31-fa-varlen-persistent-out
+    genesis_env: GENESIS_ENABLE_PN31_FA_VARLEN_PERSISTENT_OUT
+  - <<: *genesis_env_patch
+    id: genesis-pn32-gdn-chunked-prefill
+    genesis_env: GENESIS_ENABLE_PN32_GDN_CHUNKED_PREFILL
+  - <<: *genesis_env_patch
+    id: genesis-pn34-workspace-lock-relax
+    genesis_env: GENESIS_ENABLE_PN34_WORKSPACE_LOCK_RELAX
+  - <<: *genesis_env_patch
+    id: genesis-pn54
+    genesis_env: GENESIS_ENABLE_PN54
+  - <<: *genesis_env_patch
+    id: genesis-pn59-streaming-gdn
+    genesis_env: GENESIS_ENABLE_PN59_STREAMING_GDN

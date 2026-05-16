@@ -1,0 +1,248 @@
+schema_version: 1
+arches:
+  - arch: Qwen3NextForCausalLM
+    family: qwen3-next-hybrid
+    engine_pin:
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+      - pin: vllm-nightly-mtp@01d4d1ad375dc5854779c593eee093bcebb0cada
+        loads: true
+        enables: [tq3-kv, mtp, genesis]
+      - pin: vllm-nightly-dflash@e47c98ef7a38792996e452ef53914e21e41928e9
+        loads: true
+        enables: [dflash]
+      - pin: genesis@v7.72.2
+        loads: true
+        enables: [tq3-kv, mtp, cliff2-mitigations]
+    required_patches:
+      - qwen-vllm-marlin-pad
+      - qwen-vllm-pr35936-required-fallback
+      - qwen-qwen3coder-tool-parser-deferred-commit
+      - qwen-vllm-pr41800-truncate-prompt-tokens
+    valid_tp:
+      tp_divisors: [1, 2, 4]
+      marlin_alignment_required: true
+      moe_layout: dense
+      evidence: "scripts/lib/profiles/models/qwen3.6-27b.yml valid_tp; models/qwen3.6-27b/vllm/patches/vllm-marlin-pad/README.md"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "AutoRound INT4 TP paths may need Marlin pad-sub-tile-n until vllm#40361 lands."
+      - "TurboQuant KV is Genesis-gated on shipped production composes."
+      - "Boot-fit does not imply accumulated-context stability; single-card vLLM remains Cliff-2-prone."
+    confidence: exact
+    status: verified
+
+  - arch: Qwen3_5MoeForConditionalGeneration
+    family: qwen3-next-moe
+    engine_pin:
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+      - pin: vllm-nightly-mtp@01d4d1ad375dc5854779c593eee093bcebb0cada
+        loads: false
+        reason: "Production Genesis path waits for a post-vllm#42521 re-anchor."
+    required_patches: []
+    valid_tp:
+      tp_divisors: [1, 2]
+      marlin_alignment_required: false
+      moe_layout: moe
+      evidence: "scripts/lib/profiles/models/qwen3.6-35b-a3b.yml valid_tp; docs/KV_MATH.md#qwen-36-35b-a3b-moe"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Preview path is Genesis-free and no-TQ3 until a Genesis pin re-anchors on a post-vllm#42521 nightly."
+      - "Built-in MTP measured slower on TP=2 preview; use no-MTP preview as current default."
+    confidence: exact
+    status: verified
+
+  - arch: Gemma4ForConditionalGeneration
+    family: gemma4-swa-dense
+    engine_pin:
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+      - pin: vllm-nightly-full@e47c98ef7a38792996e452ef53914e21e41928e9
+        loads: true
+        enables: [int8-per-token-head, dflash-int8]
+      - pin: vllm-nightly-dflash@e47c98ef7a38792996e452ef53914e21e41928e9
+        loads: true
+        enables: [dflash]
+    required_patches:
+      - gemma-vllm-pr40391-rebased
+      - gemma-vllm-gemma4-tool-parser-fixes
+      - gemma-vllm-gemma4-dflash
+      - gemma-vllm-gemma4-dflash-int8
+    valid_tp:
+      tp_divisors: [1, 2, 4, 8, 16]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "scripts/lib/profiles/models/gemma-4-31b.yml valid_tp; docs/KV_MATH.md#gemma-4-31b"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Hybrid SWA has heterogeneous head dimensions; Gemma 4 TQ3 on Ampere is blocked on current pins."
+      - "Use int8_per_token_head for long-context Ampere paths; fp8_e4m3 is not supported on sm_86."
+    confidence: exact
+    status: verified
+
+  - arch: Gemma4ForCausalLM
+    family: gemma4-swa-dense
+    engine_pin:
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+      - pin: vllm-nightly-full@e47c98ef7a38792996e452ef53914e21e41928e9
+        loads: true
+        enables: [int8-per-token-head, dflash-int8]
+    required_patches:
+      - gemma-vllm-pr40391-rebased
+      - gemma-vllm-gemma4-tool-parser-fixes
+    valid_tp:
+      tp_divisors: [1, 2, 4, 8, 16]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "scripts/lib/profiles/models/gemma-4-31b.yml valid_tp; Gemma4ForCausalLM class in models/gemma-4-31b/vllm/patches/vllm-pr40391-rebased/model_executor/models/gemma4.py"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Text-only wrapper shares the Gemma 4 hybrid-SWA KV constraints."
+    confidence: derived
+    status: verified
+
+  - arch: Gemma4ForConditionalGenerationMoE
+    family: gemma4-swa-moe
+    engine_pin:
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+    required_patches:
+      - gemma-a4b-vllm-pr40886-awq-moe-keys
+    valid_tp:
+      tp_divisors: [1, 2]
+      marlin_alignment_required: true
+      moe_layout: moe
+      evidence: "scripts/lib/profiles/models/gemma-4-26b-a4b.yml valid_tp; BENCHMARKS.md#moe-models AutoRound Ampere-blocked row"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "AutoRound INT4 MoE intermediate 704 is Ampere-blocked by Marlin K-dim alignment; AWQ compressed-tensors is the 24GB Ampere path."
+      - "Global attention KV head count caps shipped TP at 2."
+    confidence: exact
+    status: verified
+
+  - arch: LlamaForCausalLM
+    family: dense
+    engine_pin:
+      - pin: vllm-stable@0.20.2
+        loads: true
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+    required_patches: []
+    valid_tp:
+      tp_divisors: [1, 2]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "unverified common-transformers lower-bound row"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Quant/dtype compatibility must be resolved by later deriver gates."
+    confidence: estimated-lower-bound
+    status: unverified
+
+  - arch: MistralForCausalLM
+    family: dense
+    engine_pin:
+      - pin: vllm-stable@0.20.2
+        loads: true
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+    required_patches: []
+    valid_tp:
+      tp_divisors: [1, 2]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "unverified common-transformers lower-bound row"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Quant/dtype compatibility must be resolved by later deriver gates."
+    confidence: estimated-lower-bound
+    status: unverified
+
+  - arch: Qwen2ForCausalLM
+    family: dense
+    engine_pin:
+      - pin: vllm-stable@0.20.2
+        loads: true
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+    required_patches: []
+    valid_tp:
+      tp_divisors: [1, 2]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "unverified common-transformers lower-bound row"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Quant/dtype compatibility must be resolved by later deriver gates."
+    confidence: estimated-lower-bound
+    status: unverified
+
+  - arch: Qwen3ForCausalLM
+    family: dense
+    engine_pin:
+      - pin: vllm-stable-next@>=0.21.0rc0,<0.21.0
+        loads: true
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+    required_patches: []
+    valid_tp:
+      tp_divisors: [1, 2]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "unverified common-transformers lower-bound row"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Quant/dtype compatibility must be resolved by later deriver gates."
+    confidence: estimated-lower-bound
+    status: unverified
+
+  - arch: Phi3ForCausalLM
+    family: dense
+    engine_pin:
+      - pin: vllm-stable@0.20.2
+        loads: true
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+    required_patches: []
+    valid_tp:
+      tp_divisors: [1]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "unverified common-transformers lower-bound row"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Quant/dtype compatibility must be resolved by later deriver gates."
+    confidence: estimated-lower-bound
+    status: unverified
+
+  - arch: Gemma2ForCausalLM
+    family: dense
+    engine_pin:
+      - pin: vllm-stable@0.20.2
+        loads: true
+      - pin: vllm-nightly-clean@bf610c2f56764e1b30bc6065f4ceace3d6e59036
+        loads: true
+    required_patches: []
+    valid_tp:
+      tp_divisors: [1, 2]
+      marlin_alignment_required: false
+      moe_layout: dense
+      evidence: "unverified common-transformers lower-bound row"
+    requires_trust_remote_code: unverified
+    requires_trust_remote_code_evidence: none
+    kernel_constraints:
+      - "Quant/dtype compatibility must be resolved by later deriver gates."
+    confidence: estimated-lower-bound
+    status: unverified
