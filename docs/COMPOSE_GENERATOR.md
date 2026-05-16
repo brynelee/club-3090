@@ -137,6 +137,37 @@ No args at all → usage error (exit `64`).
 one-line summary to stderr; without `--out` the compose goes to stdout. The
 3-category provenance header (§7) is always part of the emitted file.
 
+### Running a generated compose — it is NOT relocatable
+
+Per the whole-service-template model (§4), the generator copies the shipped
+service definition **verbatim** — including its bind-mount *sources*, which are
+**repo-relative** (e.g. `../../patches/<patch>/...`, `../../cache/...`, and the
+`${MODEL_DIR:-../../../../../models-cache}` default). The generator deliberately
+does **not** rewrite these (it synthesizes nothing). They resolve correctly only
+when Docker Compose's project directory is the shipped compose's own directory.
+
+Consequence: a generated file run from an arbitrary location (e.g.
+`docker compose -f /somewhere/else/out.yml up`) has **dangling bind-mount
+sources**. Docker silently creates empty directories at the missing source
+paths, so e.g. a mounted chat-template file becomes a directory and vLLM aborts
+at boot with `... looks like a file path, but it failed to be opened ...
+Is a directory`.
+
+Run a generated compose with `--project-directory` anchored to the shipped
+compose's directory (the value of `compose_service_template.source` in
+`profile_runtime.yml`), and set the same `MODEL_DIR` / `VLLM_IMAGE` the repo
+launcher sets:
+
+```
+docker compose \
+  --project-directory models/<model>/vllm/compose/<topology> \
+  -f <generated-file> up -d
+```
+
+Equivalently, write `--out` into that shipped compose directory and run it
+there. This is consistent with §10 (coexistence with the pre-baked tree): the
+generated artifact is a drop-in *for that location*, not a portable standalone.
+
 ---
 
 ## 4. The whole-service-template model
