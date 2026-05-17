@@ -25,6 +25,14 @@ set -euo pipefail
 #   * E1 dtype header-probe now LIVE: a quantized repo lacking torch_dtype
 #     resolves --dtype bfloat16 via the standardized probe-fetcher wiring
 #     (was fail-closed in E1).
+#   * DEFAULT real fetcher shells out to the `hf` CLI (NOT a
+#     huggingface_hub lib-import): resolves hf->huggingface-cli, builds
+#     argv with one --include per download_set entry (set == download_set,
+#     no extra), --local-dir == staging; subprocess.run MOCKED. The on-rig
+#     E5 ModuleNotFoundError regression fix.
+#   * NEITHER hf NOR huggingface-cli -> STRUCTURED DownloadResult(failure==
+#     "hf-cli-missing") with the canonical actionable message — NOT a
+#     raised/​swallowed ModuleNotFoundError.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
@@ -399,6 +407,146 @@ check(dt1 == "bfloat16" and rej1 is None,
 # default_probe_fetcher() yields the canonical real bounded fetcher.
 check(isinstance(D.default_probe_fetcher(), D.HttpFetcher),
       "deriver.default_probe_fetcher() == canonical HttpFetcher")
+
+# ---------------------------------------------------------------------------
+# 9. DEFAULT REAL FETCHER (no injected fixture) shells out to the `hf` CLI:
+#    resolves `hf` -> `huggingface-cli`, builds argv with EXACTLY one
+#    `--include` per download_set entry (set == download_set, no extra
+#    patterns), --local-dir == staging. subprocess.run is MOCKED (no live
+#    network/subprocess); the mock materializes the include files so the
+#    rest of download_model (SHA verify / atomic stage) runs unchanged.
+#    This is the on-rig E5 regression fix: the prior default did
+#    `from huggingface_hub import snapshot_download` -> ModuleNotFoundError
+#    under the bare python3 pull.sh runs.
+# ---------------------------------------------------------------------------
+import subprocess as _subprocess  # noqa: E402
+
+_orig_which = DL.shutil.which
+_orig_run = DL.subprocess.run
+
+captured = {}
+
+
+def fake_which_hf(name):
+    # `hf` present, `huggingface-cli` also present (hf must WIN).
+    if name == "hf":
+        return "/usr/bin/hf"
+    if name == "huggingface-cli":
+        return "/usr/bin/huggingface-cli"
+    return None
+
+
+def fake_run_ok(argv, **kw):
+    captured["argv"] = list(argv)
+    captured["env"] = kw.get("env")
+    # Materialize EXACTLY the --include set into --local-dir so the
+    # downstream SHA/stage logic (unchanged) operates on real files.
+    local_dir = None
+    includes = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--local-dir":
+            local_dir = argv[i + 1]
+            i += 2
+            continue
+        if argv[i] == "--include":
+            includes.append(argv[i + 1])
+            i += 2
+            continue
+        i += 1
+    captured["includes"] = includes
+    captured["local_dir"] = local_dir
+    rootp = Path(local_dir)
+    for name in includes:
+        p = rootp / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(f"CONTENT::{name}".encode())
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with tempfile.TemporaryDirectory() as td:
+    ei = mk_einput("Org/RealCli", td)
+    DL.shutil.which = fake_which_hf
+    DL.subprocess.run = fake_run_ok
+    try:
+        # NO fetcher= -> the DEFAULT real HubFetcher (CLI subprocess) runs.
+        # head_etag still hits urllib (network) — short-circuit it so the
+        # SHA stage uses our deterministic content fixture.
+        good_etags = {
+            n: content_sha(n) for n in ds if n.endswith(".safetensors")
+        }
+        _orig_head = DL.HubFetcher.head_etag
+        DL.HubFetcher.head_etag = (
+            lambda self, repo_id, filename: good_etags.get(filename)
+        )
+        try:
+            r = DL.download_model(ei)
+        finally:
+            DL.HubFetcher.head_etag = _orig_head
+    finally:
+        DL.shutil.which = _orig_which
+        DL.subprocess.run = _orig_run
+
+    argv = captured.get("argv", [])
+    check(argv[:1] == ["/usr/bin/hf"],
+          f"real fetcher resolves `hf` (wins over huggingface-cli); "
+          f"argv[0]={argv[:1]}")
+    check(argv[1:4] == ["download", "Org/RealCli", "--local-dir"],
+          f"real fetcher argv == `hf download <slug> --local-dir ...` "
+          f"(got {argv[1:4]})")
+    staging = str(DL.incomplete_dir(Path(td), "Org/RealCli"))
+    check(captured.get("local_dir") == staging,
+          f"--local-dir == the .incomplete staging dir (got "
+          f"{captured.get('local_dir')!r} want {staging!r})")
+    inc = captured.get("includes", [])
+    check(inc == ds,
+          f"ONE --include per download_set entry, in order, set == "
+          f"download_set, NOTHING extra (got {inc})")
+    check(set(inc) == set(ds) and len(inc) == len(ds),
+          "real fetcher --include set is EXACTLY download_set (Codex-r7 "
+          "High-1 exact-set guarantee holds via CLI transport)")
+    check(r.ok and r.failure is None and r.sha_verified is True,
+          f"real CLI fetcher: SHA verify / atomic stage logic UNCHANGED "
+          f"(ok={r.ok} fail={r.failure} sha={r.sha_verified})")
+    final = DL.pull_dir(Path(td), "Org/RealCli")
+    check(final.is_dir() and not (final / ".incomplete").exists(),
+          "real CLI fetcher: atomic move + .incomplete cleanup unchanged")
+
+# ---------------------------------------------------------------------------
+# 10. NEITHER `hf` NOR `huggingface-cli` resolvable -> STRUCTURED
+#     DownloadResult(ok=False, failure="hf-cli-missing") with the canonical
+#     actionable message — NOT a raised/​swallowed ModuleNotFoundError (the
+#     exact on-rig E5 failure mode this fix closes).
+# ---------------------------------------------------------------------------
+with tempfile.TemporaryDirectory() as td:
+    ei = mk_einput("Org/NoCli", td)
+    DL.shutil.which = lambda name: None  # nothing on PATH
+    try:
+        raised = None
+        try:
+            r = DL.download_model(ei)
+        except BaseException as exc:  # MUST NOT happen — structured only
+            raised = exc
+            r = None
+    finally:
+        DL.shutil.which = _orig_which
+
+    check(raised is None,
+          f"missing-CLI is NOT a raised exception (the E5 "
+          f"ModuleNotFoundError mode is closed); raised={raised!r}")
+    check(r is not None and r.ok is False
+          and r.failure == "hf-cli-missing",
+          f"missing-CLI -> structured DownloadResult(failure="
+          f"'hf-cli-missing') (got ok={getattr(r,'ok',None)} "
+          f"fail={getattr(r,'failure',None)})")
+    check(r is not None and "hf download" not in (r.detail or "")
+          and "huggingface-cli" in (r.detail or "")
+          and "uv tool install" in (r.detail or ""),
+          f"missing-CLI carries the canonical actionable detail "
+          f"(setup.sh:418-421 install hint); detail={getattr(r,'detail',None)!r}")
+    final = DL.pull_dir(Path(td), "Org/NoCli")
+    check(not (final / ".incomplete").exists(),
+          "missing-CLI: .incomplete tree deleted (no residue)")
 
 if failures:
     print(f"\n{len(failures)} assertion(s) failed.", file=sys.stderr)

@@ -18,16 +18,18 @@ Public API (stable for E3/E4)
     #     .bytes        -> int         (Σ size of staged files)
     #     .sha_verified -> bool        (every *.safetensors etag-verified)
     #     .failure      -> None | "no-etag" | "sha-mismatch" | "gated-401"
-    #                          | "disk"
+    #                          | "disk" | "hf-cli-missing"
+    #     .detail       -> str  (actionable message for "hf-cli-missing")
     #     .local_dir    -> str         (the CONTRACT-2 host --model dir, or
     #                                   the .incomplete path on failure)
 
 CONTRACT-3 invariants enforced here
 -----------------------------------
-* Fetch EXACTLY `deriver.download_set(api)` — `snapshot_download(...,
-  allow_patterns=<download_set>)`. The `allow_patterns` IS the literal
-  shared `download_set` list `[C2a]` sized. A test asserts fetched-set ==
-  sized-set (nothing extra).
+* Fetch EXACTLY `deriver.download_set(api)` — `hf download <slug>
+  --local-dir <staging> --include <pat>` with ONE `--include` per
+  `download_set` entry (exact filenames are valid globs). The include set
+  IS the literal shared `download_set` list `[C2a]` sized. A test asserts
+  fetched-set == sized-set (nothing extra).
 * SHA: every `*.safetensors` — HF HEAD -> `x-linked-etag` -> SHA256(file)
   == etag. **UNLIKE `setup.sh:434/437` (prints SKIP, does NOT count a
   failure on missing etag), a missing/empty `x-linked-etag` is a HARD E2
@@ -41,12 +43,16 @@ CONTRACT-3 invariants enforced here
   `--model` dir E1 emits the mount for). On ANY failure delete the
   `.incomplete` tree — no corrupt/partial residue (the `aria2c`
   corruption-incident lesson).
-* The real fetcher is `huggingface_hub` (the established tool — NOT a
-  hand-rolled fetcher, NOT the hash-oriented snapshot cache). It is
-  injectable so tests are hermetic (a recorded-fixture fetcher; NO live
-  multi-GB network in CI). The real `huggingface_hub` import is LAZY (only
-  when the default fetcher actually runs) so the test suite needs no
-  network dependency installed.
+* The real fetcher shells out to the `hf` CLI (the SAME established
+  pattern as `setup.sh:404-423` — prefer `hf`, legacy fallback
+  `huggingface-cli`, else a structured actionable failure). It is NOT the
+  `huggingface_hub` Python library: on this stack `huggingface_hub` is not
+  installed in the bare `python3` that `scripts/pull.sh` runs under (it
+  exists only as a `uv tool` exposing the `hf` CLI). An on-rig E5 run
+  caught the prior lib-import as `ModuleNotFoundError("No module named
+  'huggingface_hub'")`. The fetcher is injectable so tests are hermetic (a
+  recorded-fixture fetcher / mocked subprocess; NO live multi-GB network
+  in CI).
 """
 
 from __future__ import annotations
@@ -55,6 +61,7 @@ import hashlib
 import os
 import re
 import shutil
+import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -79,8 +86,22 @@ class DownloadResult:
     bytes: int = 0
     sha_verified: bool = False
     # None | "no-etag" | "sha-mismatch" | "gated-401" | "disk"
+    #      | "hf-cli-missing"
     failure: Optional[str] = None
     local_dir: str = ""
+    # Actionable detail (populated for "hf-cli-missing"; the canonical
+    # install hint mirrored from setup.sh:418-421). Optional / additive —
+    # existing failure paths leave it "".
+    detail: str = ""
+
+
+# The canonical actionable message when NEITHER `hf` nor `huggingface-cli`
+# resolves — mirrors setup.sh:418-421 verbatim in intent.
+_HF_CLI_MISSING_MSG = (
+    "neither 'hf' nor 'huggingface-cli' found. Install with: "
+    "pip install 'huggingface-hub[hf_transfer]'  or:  "
+    "uv tool install --with hf_transfer huggingface-hub"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +131,7 @@ def incomplete_dir(hf_home: Path, slug: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Fetcher abstraction (injectable; default = real huggingface_hub).
+# Fetcher abstraction (injectable; default = the `hf` CLI subprocess).
 #
 # A fetcher must provide:
 #   .snapshot(repo_id, local_dir, allow_patterns)  -> list[str]
@@ -118,30 +139,94 @@ def incomplete_dir(hf_home: Path, slug: str) -> Path:
 #       filenames actually written.
 #   .head_etag(repo_id, filename)                  -> str | None
 #       HF HEAD -> the `x-linked-etag` (the LFS SHA256) or None/"" if absent.
-# Tests inject a recorded-fixture fetcher (no network). The real fetcher is
-# below; its huggingface_hub import is lazy.
+# Tests inject a recorded-fixture fetcher (no network / no subprocess). The
+# real fetcher is below; it shells out to the `hf` CLI (NOT the
+# huggingface_hub Python library — that import is unavailable in the bare
+# python3 `scripts/pull.sh` runs under; see module docstring + E5).
 # ---------------------------------------------------------------------------
+class _MissingHfCli(RuntimeError):
+    """NEITHER `hf` nor `huggingface-cli` resolvable. download_model maps
+    this to the structured DownloadResult(failure="hf-cli-missing") with the
+    canonical actionable detail — it is NEVER allowed to escape as a bare
+    exception (the on-rig E5 ModuleNotFoundError regression)."""
+
+
+def _resolve_hf_cli() -> list[str]:
+    """Resolve the HF download CLI, mirroring setup.sh:411-423:
+    prefer `hf`; else legacy `huggingface-cli`; else raise `_MissingHfCli`
+    (download_model turns that into a structured failure — never a bare
+    ModuleNotFoundError)."""
+    hf = shutil.which("hf")
+    if hf:
+        return [hf]
+    legacy = shutil.which("huggingface-cli")
+    if legacy:
+        return [legacy]
+    raise _MissingHfCli(_HF_CLI_MISSING_MSG)
+
+
 class HubFetcher:
-    """Real fetcher. `snapshot_download` from huggingface_hub (the
-    established tool). `head_etag` reads HF's `x-linked-etag` (the canonical
-    LFS SHA256) via a cheap HEAD — the SAME pattern as `setup.sh:434`, but
-    the no-etag DECISION (hard fail vs skip) lives in `download_model`,
-    NOT here."""
+    """Real fetcher. `snapshot` shells out to the `hf` CLI
+    (`hf download <slug> --local-dir <staging> --include <pat> ...`) — the
+    SAME established tool/pattern as `setup.sh:404-423`, NOT the
+    `huggingface_hub` Python library (unavailable under the bare python3
+    `pull.sh` runs; on-rig E5 caught the prior lib-import as
+    ModuleNotFoundError). One `--include` per `download_set` entry so the
+    fetched set is EXACTLY the allowlist (CONTRACT-3 / Codex-r7 High-1).
+    `head_etag` reads HF's `x-linked-etag` (the canonical LFS SHA256) via a
+    cheap HEAD — the SAME pattern as `setup.sh:434`; the no-etag DECISION
+    (hard fail vs skip) lives in `download_model`, NOT here."""
 
     timeout = _NET_TIMEOUT
 
     def snapshot(
         self, repo_id: str, local_dir: str, allow_patterns: list[str]
     ) -> list[str]:
-        # LAZY import — the test suite injects a fixture fetcher and must not
-        # require huggingface_hub to be installed.
-        from huggingface_hub import snapshot_download  # noqa: E402
-
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=local_dir,
-            allow_patterns=list(allow_patterns),
+        # Resolve `hf` -> `huggingface-cli` -> structured missing (the
+        # established setup.sh pattern; lib-import would ModuleNotFoundError
+        # under the bare python3 pull.sh runs — the E5 regression).
+        base = _resolve_hf_cli()
+        argv = [*base, "download", repo_id, "--local-dir", str(local_dir)]
+        for pat in allow_patterns:
+            # Exact filenames are valid globs; one --include per
+            # download_set entry => fetched set == download_set, nothing
+            # extra (CONTRACT-3 exact-set guarantee / Codex-r7 High-1).
+            argv += ["--include", pat]
+        env = dict(os.environ)
+        env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+        env.setdefault("HF_HUB_DISABLE_XET", "1")
+        proc = subprocess.run(
+            argv,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+        if proc.returncode != 0:
+            blob = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
+            # Map non-zero exit to the EXISTING structured failure tokens,
+            # exactly as the fixture fetcher would have raised.
+            if (
+                "401" in blob
+                or "403" in blob
+                or "gated" in blob
+                or "authenticat" in blob
+                or "access to model" in blob
+                or "awaiting a review" in blob
+            ):
+                raise GatedError(proc.stderr or "gated-401")
+            if (
+                "enospc" in blob
+                or "no space left" in blob
+                or "disk quota" in blob
+                or "oserror" in blob
+            ):
+                raise DiskError(proc.stderr or "disk")
+            # Anything else still must NOT escape as a bare exception —
+            # surface it as a disk-class staging failure (cleaned + struct).
+            raise DiskError(
+                proc.stderr or proc.stdout or "hf download failed"
+            )
         out: list[str] = []
         root = Path(local_dir)
         for p in sorted(root.rglob("*")):
@@ -259,6 +344,10 @@ def download_model(einput, *, fetcher: Optional[Any] = None) -> DownloadResult:
       * SHA(file) != etag              -> failure="sha-mismatch"
       * HF gated 401/403 on fetch/HEAD -> failure="gated-401"
       * staging-disk failure           -> failure="disk"
+      * neither `hf` nor `huggingface-cli` resolvable
+                                       -> failure="hf-cli-missing"
+        (STRUCTURED, with actionable .detail — NEVER a bare
+        ModuleNotFoundError; the on-rig E5 regression this closes)
     """
     if fetcher is None:
         fetcher = HubFetcher()
@@ -290,6 +379,15 @@ def download_model(einput, *, fetcher: Optional[Any] = None) -> DownloadResult:
             repo_id=slug,
             local_dir=str(staging),
             allow_patterns=list(allow),
+        )
+    except _MissingHfCli as exc:
+        # NEITHER `hf` nor `huggingface-cli` resolvable. STRUCTURED failure
+        # with the canonical actionable detail — NEVER a bare/​swallowed
+        # ModuleNotFoundError (the on-rig E5 regression this fix closes).
+        _rmtree(staging)
+        return DownloadResult(
+            ok=False, failure="hf-cli-missing", local_dir=str(staging),
+            files=[], detail=str(exc) or _HF_CLI_MISSING_MSG,
         )
     except GatedError:
         _rmtree(staging)
