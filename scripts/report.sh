@@ -258,6 +258,70 @@ else
   subsection "Topology"
   nvidia-smi topo -m 2>&1 | redact | details "PCIe / GPU topology matrix"
 
+  # lspci-based PCIe/P2P detail. nvidia-smi reports negotiated gen/width but
+  # cannot show trained link state vs capability side-by-side, ACS state on the
+  # upstream bridge, or the real PCIe topology tree — the three things that
+  # actually decide whether GPU↔GPU P2P engages (see issues #137, #351).
+  subsection "PCIe / P2P detail (lspci)"
+  if ! have lspci; then
+    echo "_lspci not available (pciutils not installed) — skipping PCIe/P2P detail._"
+  else
+    # sudo lspci -vvv is needed for full capability blocks (ACS lives in the
+    # extended config space, root-only). Degrade gracefully if sudo is
+    # unavailable / non-interactive — non-sudo lspci still shows LnkSta.
+    LSPCI_CMD=(lspci)
+    SUDO_NOTE=""
+    if [[ $EUID -ne 0 ]]; then
+      if have sudo && sudo -n true 2>/dev/null; then
+        LSPCI_CMD=(sudo lspci)
+      else
+        SUDO_NOTE="_Note: sudo unavailable/non-interactive — running lspci without root; ACS capability lines may be incomplete (LnkSta still accurate)._"
+      fi
+    fi
+
+    {
+      [[ -n "$SUDO_NOTE" ]] && { echo "$SUDO_NOTE"; echo; }
+
+      echo "# lspci -t  (PCIe topology tree)"
+      lspci -t 2>&1
+      echo
+
+      # Per NVIDIA VGA / 3D-controller function: trained link state vs
+      # capability + ACS state. Filter to the four load-bearing lines only —
+      # never dump the full -vvv block (keeps the report compact + redaction-safe).
+      # ACS (ACSCap/ACSCtl) lives on the UPSTREAM PCIe port, not the GPU
+      # endpoint — and ACS-redirect on that bridge is exactly what blocks P2P
+      # (issues #137, #351) — so for each GPU we also dump its upstream bridge.
+      dump_func() {
+        local slot="$1" label="$2"
+        echo "# lspci -vvv -s ${slot}  (${label}: LnkCap/LnkSta/ACSCap/ACSCtl)"
+        "${LSPCI_CMD[@]}" -vvv -s "$slot" 2>/dev/null \
+          | grep -E '^[[:space:]]*(LnkCap|LnkSta|ACSCap|ACSCtl):' \
+          || echo "  (no matching LnkCap/LnkSta/ACSCap/ACSCtl lines)"
+        echo
+      }
+      while read -r slot _; do
+        [[ -z "$slot" ]] && continue
+        dump_func "$slot" "GPU function"
+        # Resolve the upstream bridge via sysfs (../.. of the device node).
+        bridge=""
+        if [[ -e "/sys/bus/pci/devices/${slot}" ]]; then
+          bridge="$(basename "$(readlink -f "/sys/bus/pci/devices/${slot}/../" 2>/dev/null)" 2>/dev/null)"
+        fi
+        if [[ "$bridge" =~ ^[0-9a-fA-F]{4}: ]]; then
+          dump_func "$bridge" "upstream bridge of ${slot}"
+        else
+          echo "  (could not resolve upstream bridge for ${slot} — ACS state for P2P may be elsewhere in the tree)"
+          echo
+        fi
+      done < <(lspci -D 2>/dev/null | grep -iE 'VGA compatible controller.*NVIDIA|3D controller.*NVIDIA')
+
+      echo "# lspci -nnk | grep -A3 -i nvidia  (driver binding + device IDs)"
+      lspci -nnk 2>/dev/null | grep -A3 -i nvidia 2>/dev/null \
+        || echo "  (no NVIDIA functions found)"
+    } 2>&1 | redact | details "lspci PCIe/P2P detail (LnkSta / ACS / topology)"
+  fi
+
   subsection "Full nvidia-smi"
   nvidia-smi 2>&1 | redact | details "Full nvidia-smi output"
 fi
