@@ -137,6 +137,16 @@ No args at all → usage error (exit `64`).
 one-line summary to stderr; without `--out` the compose goes to stdout. The
 3-category provenance header (§7) is always part of the emitted file.
 
+### Capacity values are the reference profile's — NOT fit-adapted to your hardware
+
+The generated compose's capacity knobs — `--max-model-len`, `--gpu-memory-utilization`, `--max-num-seqs`, and the KV cache dtype — are copied **verbatim from the captured reference profile** (the shipped compose it reproduces). The generator does **not** run a fit solve, does **not** size context to *your* GPU's VRAM, and does **not** down-cast the KV dtype for capacity. So:
+
+- On a card **smaller** than the reference target, the emitted `--max-model-len` may not boot — it is not shrunk for you.
+- On a card **larger** than the reference target, you are leaving context/throughput on the table — it is not grown for you.
+- For a **derived** (non-curated) model the KV dtype is whatever the model ships (often `bf16`); it is not optimised toward a denser hardware-legal format.
+
+This is deliberate (Mission §1 — reproduce + flag, NEVER repair): the generated file is a **known-safe starting point**, not a hardware-tuned config. For the actual fit on *your* hardware, run `scripts/pull.sh <slug> --profile-like <key> --recommend` (or `tools/kv-calc.py --solve-max-ctx ...`) and tune the emitted `${MAX_MODEL_LEN}` (it is intentionally an env-overridable default) accordingly. An opt-in capacity optimiser is planned for a later release; until then, right-sizing is a deliberate user step.
+
 ### Running a generated compose — it is NOT relocatable
 
 Per the whole-service-template model (§4), the generator copies the shipped

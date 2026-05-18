@@ -107,6 +107,8 @@ scripts/pull.sh Lorbus/Qwen3.6-27B-int4-AutoRound \
     --profile-like vllm/minimal --out qwen.yml
 ```
 
+> **The emitted compose carries the reference profile's capacity values, not a fit tuned to your GPU.** `--max-model-len`, `--gpu-memory-utilization`, `--max-num-seqs` and the KV dtype are copied from the captured profile — *not* re-solved for your card. It is a known-safe starting point: add `--recommend` (or run `tools/kv-calc.py --solve-max-ctx`) for the honest fit on your hardware, and tune the emitted env-overridable `${MAX_MODEL_LEN}` accordingly. See `docs/COMPOSE_GENERATOR.md` § "Capacity values are the reference profile's".
+
 ### Path B — universal evaluate (never downloads, never emits)
 
 Any non-curated slug, or `--dry-run` on anything, takes Path B. It prints
