@@ -227,6 +227,147 @@ for i in 1 2 3 4 5 6 7 8; do
   assert_contains "$out" "[${i}/8]" "probe ${i} header"
 done
 
+# ---- Test: streaming NIAH helper timing extraction ----
+# Extract the Python streaming helper from verify-stress.sh and test it
+# with mocked HTTP responses matching the REAL llama.cpp response shape.
+
+# Extract the Python code from send_streaming_niah
+STREAMING_PY="$(mktemp --suffix=.py)"
+sed -n "/^send_streaming_niah/,/^}/p" scripts/verify-stress.sh \
+  | sed -n "/<<'PYEOF'/,/PYEOF/p" \
+  | sed '1d;$d' > "$STREAMING_PY"
+
+# Test 1: llama.cpp streaming response with timings object
+# Real shape (confirmed against live endpoint):
+#   timings: {prompt_n, prompt_ms, prompt_per_second, ...}
+#   usage: {prompt_tokens, completion_tokens, ...}
+MOCK_RESULT="$(mktemp --suffix=.json)"
+MOCK_REQ="$(mktemp --suffix=.json)"
+MOCK_TEST="$(mktemp --suffix=.py)"
+echo '{"model":"test","messages":[{"role":"user","content":"hi"}],"max_tokens":10}' > "$MOCK_REQ"
+
+cat > "$MOCK_TEST" <<'PYTEST'
+import json, sys, urllib.request, urllib.error
+
+# Mock streaming chunks matching REAL llama.cpp response shape
+chunks = [
+    {"choices": [{"delta": {"content": "Paris"}, "finish_reason": None}], "id": "1"},
+    {
+        "choices": [{"delta": {}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 14, "completion_tokens": 1, "total_tokens": 15},
+        "timings": {
+            "prompt_n": 14, "prompt_ms": 346.811,
+            "prompt_per_token_ms": 24.772, "prompt_per_second": 40.368,
+            "predicted_n": 1, "predicted_ms": 17.554,
+            "predicted_per_token_ms": 17.554, "predicted_per_second": 56.968,
+        },
+    },
+]
+
+class MockResponse:
+    def __init__(self):
+        self._lines = [f"data: {json.dumps(c)}\n".encode() for c in chunks] + [b"data: [DONE]\n"]
+    def getcode(self): return 200
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def __iter__(self): return iter(self._lines)
+
+urllib.request.urlopen = lambda req, timeout=None: MockResponse()
+
+# Rewrite sys.argv so the streaming helper sees the right args
+# argv[0]=script, argv[1]=req_file, argv[2]=result_file, argv[3]=url, argv[4]=timeout
+streaming_py = sys.argv[1]
+sys.argv = [sys.argv[0]] + sys.argv[2:]
+exec(open(streaming_py).read())
+PYTEST
+
+python3 "$MOCK_TEST" "$STREAMING_PY" "$MOCK_REQ" "$MOCK_RESULT" "http://mock" "60" 2>&1
+
+if [[ -f "$MOCK_RESULT" ]]; then
+  result_http="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['http_code'])" 2>/dev/null)"
+  result_tps="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['prefill_tps'])" 2>/dev/null)"
+  result_ms="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['prefill_ms'])" 2>/dev/null)"
+  result_tok="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['prompt_tokens'])" 2>/dev/null)"
+  result_content="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['content'])" 2>/dev/null)"
+  assert_eq "streaming: llama.cpp http_code" "200" "$result_http"
+  assert_eq "streaming: llama.cpp prompt_tokens" "14" "$result_tok"
+  assert_eq "streaming: llama.cpp content" "Paris" "$result_content"
+  assert_eq "streaming: llama.cpp prefill_tps" "40.4" "$result_tps"
+  # prefill_ms should be ~346.8
+  ms_ok="$(python3 -c "print('ok' if abs(float('${result_ms}') - 346.8) < 1 else 'fail')" 2>/dev/null)"
+  assert_eq "streaming: llama.cpp prefill_ms ~346.8" "ok" "$ms_ok"
+else
+  echo "FAIL: streaming test 1 — no result file" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Test 2: vLLM-style response (no timings, cross-engine fallback)
+rm -f "$MOCK_RESULT"
+cat > "$MOCK_TEST" <<'PYTEST'
+import json, sys, urllib.request
+
+chunks = [
+    {"choices": [{"delta": {"content": "42"}, "finish_reason": None}]},
+    {
+        "choices": [{"delta": {}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 124000, "completion_tokens": 2, "total_tokens": 124002},
+    },
+]
+
+class MockResponse:
+    def __init__(self):
+        self._lines = [f"data: {json.dumps(c)}\n".encode() for c in chunks] + [b"data: [DONE]\n"]
+    def getcode(self): return 200
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def __iter__(self): return iter(self._lines)
+
+urllib.request.urlopen = lambda req, timeout=None: MockResponse()
+streaming_py = sys.argv[1]
+sys.argv = [sys.argv[0]] + sys.argv[2:]
+exec(open(streaming_py).read())
+PYTEST
+
+python3 "$MOCK_TEST" "$STREAMING_PY" "$MOCK_REQ" "$MOCK_RESULT" "http://mock" "60" 2>&1
+
+if [[ -f "$MOCK_RESULT" ]]; then
+  result_tps="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['prefill_tps'])" 2>/dev/null)"
+  result_tok="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['prompt_tokens'])" 2>/dev/null)"
+  assert_eq "streaming: vLLM prompt_tokens" "124000" "$result_tok"
+  # prefill_tps should be computed from prompt_tokens / TTFT (positive number)
+  tps_positive="$(python3 -c "print('ok' if float('${result_tps}') > 0 else 'fail')" 2>/dev/null)"
+  assert_eq "streaming: vLLM prefill_tps > 0 (cross-engine fallback)" "ok" "$tps_positive"
+else
+  echo "FAIL: streaming test 2 — no result file" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# Test 3: HTTP 500 error handling
+rm -f "$MOCK_RESULT"
+cat > "$MOCK_TEST" <<'PYTEST'
+import json, sys, urllib.request, urllib.error
+
+def mock_urlopen(req, timeout=None):
+    raise urllib.error.HTTPError(
+        'http://mock/v1/chat/completions', 500, 'OOM', {}, None)
+urllib.request.urlopen = mock_urlopen
+streaming_py = sys.argv[1]
+sys.argv = [sys.argv[0]] + sys.argv[2:]
+exec(open(streaming_py).read())
+PYTEST
+
+python3 "$MOCK_TEST" "$STREAMING_PY" "$MOCK_REQ" "$MOCK_RESULT" "http://mock" "60" 2>&1
+
+if [[ -f "$MOCK_RESULT" ]]; then
+  result_http="$(python3 -c "import json; print(json.load(open('$MOCK_RESULT'))['http_code'])" 2>/dev/null)"
+  assert_eq "streaming: HTTP 500 error handling" "500" "$result_http"
+else
+  echo "FAIL: streaming test 3 — no result file" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$STREAMING_PY" "$MOCK_RESULT" "$MOCK_REQ" "$MOCK_TEST"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 if [[ "$FAIL" -gt 0 ]]; then

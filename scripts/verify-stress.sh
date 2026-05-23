@@ -162,6 +162,125 @@ case "$ENGINE_KIND" in
   *) LOG_CMD="check your engine's stdout/stderr or container logs" ;;
 esac
 
+# --------------------------------------------------------------------
+# Streaming NIAH helper — sends a needle-in-haystack request with
+# stream:true, measures TTFT, extracts prefill throughput.
+#
+# Usage: send_streaming_niah <req_file> <result_file> <url> <timeout_s>
+#
+# Writes a JSON result to <result_file> with:
+#   http_code, content, prompt_tokens, completion_tokens,
+#   ttft_ms, total_wall_ms,
+#   prefill_tps, prefill_ms, prefill_n
+#
+# Prefill throughput:
+#   - Primary (llama.cpp): timings.prompt_per_second + timings.prompt_ms
+#     from the final streaming chunk (confirmed against live endpoint).
+#   - Fallback (cross-engine): prompt_tokens / TTFT_seconds.
+#   - If neither available: prefill_tps=null.
+# --------------------------------------------------------------------
+send_streaming_niah() {
+  local _req_file="$1" _result_file="$2" _url="$3" _timeout="$4"
+  python3 - "$_req_file" "$_result_file" "$_url" "$_timeout" <<'PYEOF'
+import json, os, sys, time, urllib.request, urllib.error
+
+req_file, result_file, url, timeout_s = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+
+with open(req_file) as f:
+    req = json.load(f)
+
+# Enable streaming + usage in final chunk
+req["stream"] = True
+req["stream_options"] = {"include_usage": True}
+
+body = json.dumps(req).encode("utf-8")
+http_req = urllib.request.Request(
+    f"{url}/v1/chat/completions",
+    data=body,
+    headers={"Content-Type": "application/json"},
+)
+
+t_send = time.time()
+ttft = None
+content_parts = []
+usage = None
+timings = None
+result = {"http_code": 0, "error": None}
+
+try:
+    with urllib.request.urlopen(http_req, timeout=timeout_s) as resp:
+        result["http_code"] = resp.getcode() or 200
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="ignore").rstrip()
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+
+            # First content token → TTFT
+            choices = chunk.get("choices") or []
+            if choices and ttft is None:
+                delta = choices[0].get("delta", {})
+                if delta.get("content") or delta.get("reasoning_content"):
+                    ttft = time.time() - t_send
+
+            # Accumulate streamed content
+            if choices:
+                c = (choices[0].get("delta", {}).get("content", "") or "")
+                if c:
+                    content_parts.append(c)
+
+            # Final chunk carries usage + timings (llama.cpp)
+            if "usage" in chunk:
+                usage = chunk["usage"]
+            if "timings" in chunk:
+                timings = chunk["timings"]
+
+    t_total = time.time() - t_send
+
+    result["content"] = "".join(content_parts)
+    result["prompt_tokens"] = (usage or {}).get("prompt_tokens", 0)
+    result["completion_tokens"] = (usage or {}).get("completion_tokens", 0)
+    result["ttft_ms"] = round(ttft * 1000) if ttft is not None else None
+    result["total_wall_ms"] = round(t_total * 1000)
+
+    # Prefill throughput: prefer llama.cpp timings (server-measured, precise)
+    if timings and timings.get("prompt_per_second"):
+        result["prefill_tps"] = round(timings["prompt_per_second"], 1)
+        result["prefill_ms"] = round(timings["prompt_ms"], 1) if timings.get("prompt_ms") else None
+        result["prefill_n"] = timings.get("prompt_n")
+    elif ttft and usage and usage.get("prompt_tokens") and ttft > 0:
+        # Cross-engine fallback: prompt_tokens / TTFT
+        result["prefill_tps"] = round(usage["prompt_tokens"] / ttft, 1)
+        result["prefill_ms"] = round(ttft * 1000)
+        result["prefill_n"] = usage["prompt_tokens"]
+    else:
+        result["prefill_tps"] = None
+        result["prefill_ms"] = None
+        result["prefill_n"] = None
+
+except urllib.error.HTTPError as e:
+    result["http_code"] = e.code
+    result["error"] = str(e)
+    # Try to read the error body for diagnostics
+    try:
+        result["error_body"] = e.read().decode("utf-8", errors="replace")[:500]
+    except Exception:
+        pass
+except Exception as e:
+    result["http_code"] = 0
+    result["error"] = str(e)
+
+with open(result_file, "w") as f:
+    json.dump(result, f)
+PYEOF
+}
+
 echo "Running STRESS / boundary test against ${URL}"
 echo "  model=${MODEL}  container=${CONTAINER}  engine=${ENGINE_KIND}"
 echo "  This script does the heavy stuff (longctx needle ladder + ~25K-token tool prefill)."
@@ -249,41 +368,52 @@ with open(os.environ['REQ_FILE'], 'w') as f:
 EOF
     local secret
     secret="$(cat "$secret_file")"
-    local resp content_raw prompt_tok http_code resp_file
-    resp_file="$(mktemp --suffix=.json)"
-    http_code="$(curl -s -m "${STRESS_LONGCTX_TIMEOUT_S}" -o "${resp_file}" -w '%{http_code}' \
-      "${URL}/v1/chat/completions" \
-      -H "Content-Type: application/json" \
-      --data-binary "@${req_file}")" || http_code="000"
+    local result_file http_code
+    result_file="$(mktemp --suffix=.json)"
+    send_streaming_niah "$req_file" "$result_file" "$URL" "$STRESS_LONGCTX_TIMEOUT_S"
     rm -f "$secret_file" "$req_file"
+    http_code="$(python3 -c "import json; print(json.load(open('$result_file'))['http_code'])" 2>/dev/null || echo 0)"
     if [[ "$http_code" == "400" ]]; then
       printf "    \033[33m⊘\033[0m scale=%d: HTTP 400 (exceeds --max-model-len, expected — clean rejection)\n" "$filler_scale"
-      rm -f "$resp_file"
+      rm -f "$result_file"
       any_skipped=1
       continue
     elif [[ "$http_code" != "200" ]]; then
       printf "    \033[31m✗\033[0m scale=%d: HTTP %s (request failed)\n" "$filler_scale" "$http_code"
-      rm -f "$resp_file"
+      rm -f "$result_file"
       any_fail=1
       continue
     fi
-    resp="$(cat "${resp_file}")"
-    rm -f "${resp_file}"
-    prompt_tok="$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['usage']['prompt_tokens'])" 2>/dev/null)"
-    content_raw="$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['choices'][0]['message']['content'])" 2>/dev/null)"
+    local prompt_tok content_raw prefill_tps prefill_ms
+    prompt_tok="$(python3 -c "import json; d=json.load(open('$result_file')); print(d.get('prompt_tokens',0))" 2>/dev/null || echo 0)"
+    content_raw="$(python3 -c "import json; d=json.load(open('$result_file')); print(d.get('content',''))" 2>/dev/null || echo '')"
+    prefill_tps="$(python3 -c "import json; d=json.load(open('$result_file')); v=d.get('prefill_tps'); print(v if v is not None else '')" 2>/dev/null || echo '')"
+    prefill_ms="$(python3 -c "import json; d=json.load(open('$result_file')); v=d.get('prefill_ms'); print(v if v is not None else '')" 2>/dev/null || echo '')"
+    rm -f "$result_file"
+    local prefill_str=""
+    if [[ -n "$prefill_tps" ]]; then
+      prefill_str="  prefill=${prefill_tps} t/s"
+      if [[ -n "$prefill_ms" ]]; then
+        local prefill_s
+        prefill_s="$(python3 -c "print(f'{${prefill_ms}/1000:.0f}')" 2>/dev/null || echo '')"
+        if [[ -n "$prefill_s" ]]; then
+          prefill_str="  prefill=${prefill_tps} t/s (${prefill_s}s)"
+        fi
+      fi
+    fi
     local all_match=1
     for tok in $secret; do
       echo "$content_raw" | grep -qiF "$tok" || all_match=0
     done
     if [[ "$all_match" == "1" ]]; then
-      printf "    \033[32m✓\033[0m %6s tokens: recalled '%s' (got: %s)\n" "$prompt_tok" "$secret" "$(echo "$content_raw" | head -c 60 | tr '\n' ' ')"
+      printf "    \033[32m✓\033[0m %6s tokens: recalled '%s' (got: %s)%s\n" "$prompt_tok" "$secret" "$(echo "$content_raw" | head -c 60 | tr '\n' ' ')" "$prefill_str"
       any_pass=1
     else
       # Recall miss at HTTP 200 = attention quality degradation, not a system
       # failure. Log it as informational (yellow △), break out of the ladder
       # — deeper rungs will only be worse — and pass the probe so the
       # pipeline moves to the next stage.
-      printf "    \033[33m△\033[0m %6s tokens: recall MISS (expected '%s', got '%s') — system OK, quality ceiling reached\n" "$prompt_tok" "$secret" "$(echo "$content_raw" | head -c 80 | tr '\n' ' ')"
+      printf "    \033[33m△\033[0m %6s tokens: recall MISS (expected '%s', got '%s') — system OK, quality ceiling reached%s\n" "$prompt_tok" "$secret" "$(echo "$content_raw" | head -c 80 | tr '\n' ' ')" "$prefill_str"
       any_recall_miss=1
       break
     fi
@@ -991,10 +1121,9 @@ print(' '.join(str(r) for r in rungs))
     filler_scale="$(python3 -c "print(max(100, int(${target_tokens} / 3.5)))")"
 
     # Build + send the NIAH request
-    local secret_file req_file resp_file http_code
+    local secret_file req_file http_code
     secret_file="$(mktemp --suffix=.secret)"
     req_file="$(mktemp --suffix=.json)"
-    resp_file="$(mktemp --suffix=.json)"
 
     MODEL_VAR="${MODEL}" SECRET_FILE="${secret_file}" REQ_FILE="${req_file}" \
       FILLER_SCALE="${filler_scale}" python3 - <<'EOF'
@@ -1039,11 +1168,12 @@ EOF
     local secret
     secret="$(cat "$secret_file")"
 
-    http_code="$(curl -s -m "${rung_timeout}" -o "${resp_file}" -w '%{http_code}' \
-      "${URL}/v1/chat/completions" \
-      -H "Content-Type: application/json" \
-      --data-binary "@${req_file}")" || http_code="000"
+    local result_file
+    result_file="$(mktemp --suffix=.json)"
+    send_streaming_niah "$req_file" "$result_file" "$URL" "$rung_timeout"
     rm -f "$secret_file" "$req_file"
+
+    http_code="$(python3 -c "import json; print(json.load(open('$result_file'))['http_code'])" 2>/dev/null || echo 0)"
 
     # Capture VRAM after this rung
     local vram_after_rung
@@ -1053,14 +1183,29 @@ EOF
       vram_str="  VRAM_free=${vram_after_rung}MB"
     fi
 
+    # Extract prefill data from result
+    local prefill_tps prefill_ms prefill_str
+    prefill_tps="$(python3 -c "import json; d=json.load(open('$result_file')); v=d.get('prefill_tps'); print(v if v is not None else '')" 2>/dev/null || echo '')"
+    prefill_ms="$(python3 -c "import json; d=json.load(open('$result_file')); v=d.get('prefill_ms'); print(v if v is not None else '')" 2>/dev/null || echo '')"
+    prefill_str=""
+    if [[ -n "$prefill_tps" ]]; then
+      prefill_str="  prefill=${prefill_tps} t/s"
+      if [[ -n "$prefill_ms" ]]; then
+        local prefill_s
+        prefill_s="$(python3 -c "print(f'{${prefill_ms}/1000:.0f}')" 2>/dev/null || echo '')"
+        if [[ -n "$prefill_s" ]]; then
+          prefill_str="  prefill=${prefill_tps} t/s (${prefill_s}s)"
+        fi
+      fi
+    fi
+
     # Evaluate
     case "$http_code" in
       200)
-        local resp prompt_tok content_raw all_match
-        resp="$(cat "${resp_file}")"
-        rm -f "${resp_file}"
-        prompt_tok="$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['usage']['prompt_tokens'])" 2>/dev/null || echo 0)"
-        content_raw="$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['choices'][0]['message']['content'])" 2>/dev/null || echo '')"
+        local prompt_tok content_raw all_match
+        prompt_tok="$(python3 -c "import json; d=json.load(open('$result_file')); print(d.get('prompt_tokens',0))" 2>/dev/null || echo 0)"
+        content_raw="$(python3 -c "import json; d=json.load(open('$result_file')); print(d.get('content',''))" 2>/dev/null || echo '')"
+        rm -f "$result_file"
         all_match=1
         for tok in $secret; do
           echo "$content_raw" | grep -qiF "$tok" || all_match=0
@@ -1068,8 +1213,8 @@ EOF
         local pct=0
         [[ "$prompt_tok" -gt 0 && "$n_ctx" -gt 0 ]] && pct=$(( prompt_tok * 100 / n_ctx ))
         if [[ "$all_match" == "1" ]]; then
-          printf "    \033[32m✓\033[0m rung %d/%d: target=%dK  actual=%dK tok (%d%%)  recalled '%s'%s\n" \
-            "$rung_idx" "$rung_count" "$((target_tokens / 1000))" "$((prompt_tok / 1000))" "$pct" "$secret" "$vram_str"
+          printf "    \033[32m✓\033[0m rung %d/%d: target=%dK  actual=%dK tok (%d%%)  recalled '%s'%s%s\n" \
+            "$rung_idx" "$rung_count" "$((target_tokens / 1000))" "$((prompt_tok / 1000))" "$pct" "$secret" "$prefill_str" "$vram_str"
           any_pass=1
           last_pass_tokens="$prompt_tok"
           last_pass_pct="$pct"
@@ -1079,9 +1224,9 @@ EOF
           # Log it, break out of the ladder, and pass the probe so the
           # pipeline moves to the next stage without wasting time on
           # unreliable depths.
-          printf "    \033[33m△\033[0m rung %d/%d: target=%dK  actual=%dK tok (%d%%)  recall MISS (got: '%s') — quality ceiling reached%s\n" \
+          printf "    \033[33m△\033[0m rung %d/%d: target=%dK  actual=%dK tok (%d%%)  recall MISS (got: '%s') — quality ceiling reached%s%s\n" \
             "$rung_idx" "$rung_count" "$((target_tokens / 1000))" "$((prompt_tok / 1000))" "$pct" \
-            "$(echo "$content_raw" | head -c 60 | tr '\n' ' ')" "$vram_str"
+            "$(echo "$content_raw" | head -c 60 | tr '\n' ' ')" "$prefill_str" "$vram_str"
           any_recall_miss=1
           if [[ "$first_recall_miss_tokens" -eq 0 ]]; then
             first_recall_miss_tokens="$prompt_tok"
@@ -1093,7 +1238,7 @@ EOF
       400)
         printf "    \033[33m⊘\033[0m rung %d/%d: target=%dK  HTTP 400 (exceeds engine limit — clean rejection)%s\n" \
           "$rung_idx" "$rung_count" "$((target_tokens / 1000))" "$vram_str"
-        rm -f "${resp_file}"
+        rm -f "$result_file"
         any_skipped=1
         # Engine's hard limit — no point trying deeper rungs
         break
@@ -1102,7 +1247,7 @@ EOF
         printf "    \033[31m✗\033[0m rung %d/%d: target=%dK  HTTP 500 (OOM at ~%d%% of n_ctx=%d)%s\n" \
           "$rung_idx" "$rung_count" "$((target_tokens / 1000))" \
           "$(( target_tokens * 100 / n_ctx ))" "$n_ctx" "$vram_str"
-        rm -f "${resp_file}"
+        rm -f "$result_file"
         any_fail=1
         if [[ "$first_fail_tokens" -eq 0 ]]; then
           first_fail_tokens="$target_tokens"
@@ -1113,7 +1258,7 @@ EOF
       000)
         printf "    \033[31m✗\033[0m rung %d/%d: target=%dK  timeout/crash (>%ds)%s\n" \
           "$rung_idx" "$rung_count" "$((target_tokens / 1000))" "$rung_timeout" "$vram_str"
-        rm -f "${resp_file}"
+        rm -f "$result_file"
         any_fail=1
         if [[ "$first_fail_tokens" -eq 0 ]]; then
           first_fail_tokens="$target_tokens"
@@ -1124,7 +1269,7 @@ EOF
       *)
         printf "    \033[31m✗\033[0m rung %d/%d: target=%dK  unexpected HTTP %s%s\n" \
           "$rung_idx" "$rung_count" "$((target_tokens / 1000))" "$http_code" "$vram_str"
-        rm -f "${resp_file}"
+        rm -f "$result_file"
         any_fail=1
         if [[ "$first_fail_tokens" -eq 0 ]]; then
           first_fail_tokens="$target_tokens"
